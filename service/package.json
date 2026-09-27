@@ -1,0 +1,43 @@
+{
+  "name": "video-kit-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "bundle": "tsx scripts/bundle.ts",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/src/index.js",
+    "studio": "remotion studio remotion/index.ts",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.remotion.json",
+    "test": "vitest run",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "dependencies": {
+    "@banfimatei/video-kit": "file:..",
+    "@fontsource/inter": "5.2.8",
+    "@fontsource/jetbrains-mono": "5.2.8",
+    "@fontsource/newsreader": "5.3.0",
+    "@hono/node-server": "2.1.1",
+    "@remotion/bundler": "4.0.529",
+    "@remotion/cli": "4.0.529",
+    "@remotion/fonts": "4.0.529",
+    "@remotion/media": "4.0.529",
+    "@remotion/renderer": "4.0.529",
+    "@remotion/sfx": "4.0.529",
+    "@remotion/transitions": "4.0.529",
+    "hono": "4.13.9",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.529",
+    "tar": "7.5.22",
+    "zod": "4.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.4",
+    "@types/react": "19.2.7",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.2"
+  }
+}

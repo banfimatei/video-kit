@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/.data
+service/bundle
+out
+*.tgz
+.git
+.env
+.env.*

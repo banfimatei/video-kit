@@ -1,0 +1,86 @@
+{
+  "name": "@banfimatei/video-kit",
+  "version": "0.1.0",
+  "description": "Programmatic video toolkit: voiceover, sound effects, fit-to-voice timing and rendering for Remotion projects, plus a client for the video-kit render service.",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "workspaces": [
+    "service"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
+    "./node": {
+      "types": "./dist/node/index.d.ts",
+      "default": "./dist/node/index.js"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "default": "./dist/client/index.js"
+    },
+    "./assets/sfx/*": "./assets/sfx/*",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "video-kit": "./dist/node/cli.js"
+  },
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace service",
+    "test": "vitest run && npm test --workspace service",
+    "sfx:make": "tsx scripts/make-sfx.ts",
+    "test:lib": "vitest run"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dependencies": {
+    "mediabunny": "1.56.1",
+    "tar": "7.5.22"
+  },
+  "peerDependencies": {
+    "@remotion/bundler": ">=4.0.529 <5",
+    "@remotion/media": ">=4.0.529 <5",
+    "@remotion/renderer": ">=4.0.529 <5",
+    "@remotion/sfx": ">=4.0.529 <5",
+    "react": ">=18",
+    "remotion": ">=4.0.529 <5",
+    "zod": "^4"
+  },
+  "peerDependenciesMeta": {
+    "@remotion/bundler": {
+      "optional": true
+    },
+    "@remotion/renderer": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@remotion/bundler": "4.0.529",
+    "@remotion/media": "4.0.529",
+    "@remotion/renderer": "4.0.529",
+    "@remotion/sfx": "4.0.529",
+    "@types/node": "22.20.4",
+    "@types/react": "19.2.7",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "remotion": "4.0.529",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "5.0.2",
+    "zod": "4.5.4"
+  }
+}

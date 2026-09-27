@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+      # A real render through the running service, voiced offline by espeak.
+      - name: Install espeak-ng
+        run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends espeak-ng
+      - run: npm run build --workspace service && npm run bundle --workspace service
+      - name: Start the service
+        working-directory: service
+        run: |
+          RENDER_API_KEY=ci-key-0123456789abcdef DATA_DIR=$RUNNER_TEMP/data PORT=8080 node dist/src/index.js > $RUNNER_TEMP/service.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf localhost:8080/healthz && exit 0; sleep 2; done
+          cat $RUNNER_TEMP/service.log; exit 1
+      - name: 'Smoke: render a voiced Story'
+        working-directory: service
+        env:
+          VIDEO_KIT_URL: http://localhost:8080
+          VIDEO_KIT_API_KEY: ci-key-0123456789abcdef
+          SMOKE_TTS: espeak
+          SMOKE_OUT: ${{ runner.temp }}/smoke.mp4
+        run: npm run smoke
+      - if: failure()
+        run: cat $RUNNER_TEMP/service.log
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smoke
+          path: ${{ runner.temp }}/smoke.mp4
+          retention-days: 7
+
+  # The image Railway builds, built here first so a bad Dockerfile fails CI, not a deploy.
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t video-kit:ci .
+      - name: Boot the image and check health
+        run: |
+          docker run -d --name vk -p 8080:8080 -e RENDER_API_KEY=ci-key-0123456789abcdef video-kit:ci
+          for i in $(seq 1 60); do curl -sf localhost:8080/healthz && exit 0; sleep 2; done
+          docker logs vk; exit 1
