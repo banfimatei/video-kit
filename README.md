@@ -198,7 +198,7 @@ await renderComposition({
   compositionId: "MyVideo",
   inputProps: { narration: { intro: "Hello.", main: "Here's the thing." } },
   output: "out/my-video.mp4",
-  tts: "elevenlabs", // or openai | gemini | espeak | none; default: whichever key is set
+  tts: "elevenlabs", // or openai | gemini | openrouter | espeak | none; default: whichever key is set
 });
 ```
 
@@ -213,6 +213,7 @@ assets, for validating props in Node. Scene ids must be unique
 | `elevenlabs` | `ELEVENLABS_API_KEY` | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_INSTRUCTIONS` |
 | `gemini` | `GEMINI_API_KEY` | `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE` |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `openai/gpt-4o-mini-tts-2025-12-15`; also Gemini, Voxtral, Kokoro… — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `onyx`; voices are per model), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only) |
 | `espeak` | `espeak-ng` installed | Robotic: offline tests and CI |
 
 Clips are cached by a hash of provider, voice and text, so re-rendering the
@@ -232,7 +233,7 @@ new services, so these are service settings:
 | Draining | the **variable** `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300` (not the Settings field: the service reads the variable to know its window, and logs it at boot) |
 | Start Command | leave empty. A start command replaces the image's entrypoint (`dumb-init`), and then renders can't drain on redeploy |
 | Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile`, `/.dockerignore` (docs-only commits don't restart it) |
-| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) |
+| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`) |
 | Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 
 Everything else has defaults: see [`service/.env.example`](service/.env.example).

@@ -7,6 +7,7 @@
  *   elevenlabs  ELEVENLABS_API_KEY  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
+ *   openrouter  OPENROUTER_API_KEY  [OPENROUTER_TTS_MODEL, OPENROUTER_TTS_VOICE, OPENROUTER_TTS_INSTRUCTIONS]
  *   espeak      espeak-ng on PATH, no key: robotic, for offline tests and CI only
  *   none        no voice
  *
@@ -24,7 +25,7 @@ import type { Narration, VoiceClip, Voiceover } from "../schema.js";
 
 const execFileAsync = promisify(execFile);
 
-export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "espeak"] as const;
+export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "openrouter", "espeak"] as const;
 export type TtsProvider = (typeof TTS_PROVIDERS)[number];
 type Env = Record<string, string | undefined>;
 
@@ -41,6 +42,7 @@ export function pickTtsProvider(requested?: string | null, env: Env = process.en
   if (env.ELEVENLABS_API_KEY) return "elevenlabs";
   if (env.OPENAI_API_KEY) return "openai";
   if (env.GEMINI_API_KEY) return "gemini";
+  if (env.OPENROUTER_API_KEY) return "openrouter";
   return null;
 }
 
@@ -180,6 +182,50 @@ export function createSynthesizer(
           if (!part?.data) throw new Error("Gemini TTS returned no audio.");
           const rate = Number(/rate=(\d+)/.exec(part.mimeType ?? "")?.[1] ?? 24000);
           return pcmToWav(Buffer.from(part.data, "base64"), rate);
+        },
+      };
+    }
+    case "openrouter": {
+      // OpenRouter's /audio/speech: OpenAI-compatible, routed to OpenAI, Google, Mistral, Kokoro… by model slug.
+      const key = required(env, "OPENROUTER_API_KEY");
+      const model = env.OPENROUTER_TTS_MODEL || "openai/gpt-4o-mini-tts-2025-12-15";
+      // Voices are per model (OpenAI: alloy, onyx…; Voxtral: en_paul_neutral…; Kokoro: af_bella…).
+      const voice = env.OPENROUTER_TTS_VOICE || "onyx";
+      const instructions = env.OPENROUTER_TTS_INSTRUCTIONS || "Measured, neutral delivery. No hype.";
+      const upstream = model.split("/")[0];
+      return {
+        voice: `${model}/${voice}/${upstream === "openai" ? instructions : ""}`,
+        ext: "mp3",
+        synthesize: async (text, signal) => {
+          const res = await post(
+            fetchImpl,
+            "https://openrouter.ai/api/v1/audio/speech",
+            {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${key}`,
+                "Content-Type": "application/json",
+                "X-Title": "video-kit",
+              },
+              body: JSON.stringify({
+                model,
+                input: text,
+                voice,
+                // The endpoint defaults to raw PCM; mp3 is a file every decoder reads.
+                response_format: "mp3",
+                // Tone steering is an OpenAI passthrough; other upstreams would reject or ignore it.
+                ...(upstream === "openai" ? { provider: { options: { openai: { instructions } } } } : {}),
+              }),
+            },
+            "OpenRouter",
+            signal,
+          );
+          const type = res.headers.get("content-type") ?? "";
+          if (!type.startsWith("audio/")) {
+            const body = await res.text().catch(() => "");
+            throw new Error(`OpenRouter TTS returned ${type || "no content type"}, not audio: ${body.slice(0, 300)}`);
+          }
+          return Buffer.from(await res.arrayBuffer());
         },
       };
     }

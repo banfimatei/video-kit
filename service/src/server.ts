@@ -19,7 +19,7 @@ const renderRequestSchema = z.object({
   site: z.string().min(1).max(63).default(BUILTIN),
   composition: z.string().min(1).max(100),
   props: z.record(z.string(), z.unknown()).default({}),
-  tts: z.enum(["elevenlabs", "openai", "gemini", "espeak", "none"]).optional(),
+  tts: z.enum(["elevenlabs", "openai", "gemini", "openrouter", "espeak", "none"]).optional(),
   kind: z.enum(["video", "still"]).default("video"),
   frame: z.number().int().min(0).optional(),
   poster: z.union([z.number().int().min(0), z.literal(false)]).optional(),
