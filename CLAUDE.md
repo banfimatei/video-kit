@@ -67,3 +67,11 @@ VIDEO_KIT_URL=http://localhost:8080 VIDEO_KIT_API_KEY=dev-key-0123456789ab SMOKE
 In a Claude Code cloud session: set
 `REMOTION_BROWSER_EXECUTABLE=/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell`
 (remotion.media is blocked) and `apt-get install espeak-ng` for the offline voice.
+
+## Deploys
+
+Railway deploys `main` on push (only paths in the service's watch list; see
+README). That needs Railway's GitHub app to have access to this repo; if a
+push doesn't deploy, check that first. OpenRouter voices need
+`OPENROUTER_API_KEY` on the service.
+
