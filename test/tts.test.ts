@@ -207,7 +207,7 @@ describe("voiceNarration", () => {
     expect(() => createSynthesizer("elevenlabs", {}, fetchImpl)).toThrow(/ELEVENLABS_API_KEY/);
   });
 
-  it("speaks through OpenRouter's /audio/speech as mp3, with OpenAI tone instructions only for OpenAI models", async () => {
+  it("speaks through OpenRouter's /audio/speech as mp3, with tone instructions only for OpenAI models", async () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const mp3 = Buffer.from([0xff, 0xf3, 0x44, 0xc4]);
     const fetchImpl = (async (url: string, init: RequestInit) => {
@@ -215,18 +215,20 @@ describe("voiceNarration", () => {
       return new Response(mp3, { headers: { "Content-Type": "audio/mpeg" } });
     }) as unknown as typeof fetch;
 
-    const openai = createSynthesizer("openrouter", { OPENROUTER_API_KEY: "r-key" }, fetchImpl);
-    expect(openai.ext).toBe("mp3");
-    expect(await openai.synthesize("Hello.")).toEqual(mp3);
+    const gemini = createSynthesizer("openrouter", { OPENROUTER_API_KEY: "r-key" }, fetchImpl);
+    expect(gemini.ext).toBe("mp3");
+    expect(await gemini.synthesize("Hello.")).toEqual(mp3);
     expect(seen[0].url).toBe("https://openrouter.ai/api/v1/audio/speech");
     expect((seen[0].init.headers as Record<string, string>).Authorization).toBe("Bearer r-key");
     expect(JSON.parse(String(seen[0].init.body))).toEqual({
-      model: "openai/gpt-4o-mini-tts-2025-12-15",
+      model: "google/gemini-3.8-flash-tts",
       input: "Hello.",
-      voice: "onyx",
+      voice: "Charon",
       response_format: "mp3",
-      provider: { options: { openai: { instructions: "Measured, neutral delivery. No hype." } } },
     });
+    const openai = createSynthesizer("openrouter", { OPENROUTER_API_KEY: "r-key", OPENROUTER_TTS_MODEL: "openai/some-tts", OPENROUTER_TTS_VOICE: "alloy" }, fetchImpl);
+    await openai.synthesize("Hi.");
+    expect(JSON.parse(String(seen[1].init.body)).provider).toEqual({ options: { openai: { instructions: "Measured, neutral delivery. No hype." } } });
 
     const voxtral = createSynthesizer(
       "openrouter",
@@ -234,11 +236,11 @@ describe("voiceNarration", () => {
       fetchImpl,
     );
     await voxtral.synthesize("Hi.");
-    const body = JSON.parse(String(seen[1].init.body));
+    const body = JSON.parse(String(seen[2].init.body));
     expect(body).toMatchObject({ model: "mistralai/voxtral-mini-tts-2603", voice: "en_paul_neutral", response_format: "mp3" });
     expect(body.provider).toBeUndefined();
     // Different model or voice, different cache key.
-    expect(voxtral.voice).not.toBe(openai.voice);
+    expect(voxtral.voice).not.toBe(gemini.voice);
   });
 
   it("fails loudly when OpenRouter answers with an error or with something that isn't audio", async () => {

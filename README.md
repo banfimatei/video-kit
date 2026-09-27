@@ -213,7 +213,7 @@ assets, for validating props in Node. Scene ids must be unique
 | `elevenlabs` | `ELEVENLABS_API_KEY` | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_INSTRUCTIONS` |
 | `gemini` | `GEMINI_API_KEY` | `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE` |
-| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `openai/gpt-4o-mini-tts-2025-12-15`; also Gemini, Voxtral, Kokoro… — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `onyx`; voices are per model), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only) |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `google/gemini-3.8-flash-tts`; also Voxtral, Kokoro, MiniMax, Deepgram… — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `Charon`; voices are per model, listed as `supported_voices` in `GET /api/v1/models?output_modalities=speech`), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only) |
 | `espeak` | `espeak-ng` installed | Robotic: offline tests and CI |
 
 Clips are cached by a hash of provider, voice and text, so re-rendering the

@@ -188,9 +188,10 @@ export function createSynthesizer(
     case "openrouter": {
       // OpenRouter's /audio/speech: OpenAI-compatible, routed to OpenAI, Google, Mistral, Kokoro… by model slug.
       const key = required(env, "OPENROUTER_API_KEY");
-      const model = env.OPENROUTER_TTS_MODEL || "openai/gpt-4o-mini-tts-2025-12-15";
-      // Voices are per model (OpenAI: alloy, onyx…; Voxtral: en_paul_neutral…; Kokoro: af_bella…).
-      const voice = env.OPENROUTER_TTS_VOICE || "onyx";
+      // Models and their voices: GET https://openrouter.ai/api/v1/models?output_modalities=speech
+      const model = env.OPENROUTER_TTS_MODEL || "google/gemini-3.8-flash-tts";
+      // Voices are per model (Gemini: Charon, Kore…; Voxtral: en_paul_neutral…; Kokoro: af_bella…).
+      const voice = env.OPENROUTER_TTS_VOICE || "Charon";
       const instructions = env.OPENROUTER_TTS_INSTRUCTIONS || "Measured, neutral delivery. No hype.";
       const upstream = model.split("/")[0];
       return {
