@@ -9,7 +9,7 @@ import { bearerToken, safeEqual, verifySignedPath } from "./auth.js";
 import type { Config } from "./config.js";
 import { contentDisposition, fileResponse } from "./files.js";
 import { TERMINAL, type JobStore, type RenderQueue } from "./jobs.js";
-import { assertPublicUrl, UnsafeTargetError } from "./net.js";
+import { assertPublicUrl, ResolveError, UnsafeTargetError } from "./net.js";
 import { checkProps } from "./props.js";
 import type { Runner } from "./runner.js";
 import { BUILTIN, HttpError, type Sites } from "./sites.js";
@@ -127,8 +127,10 @@ export function createApp({ cfg, store, queue, sites, runner, version, draining 
 
   v1.delete("/sites/:name", async (c) => {
     const name = c.req.param("name");
-    const active = new Set(store.all().filter((j) => !TERMINAL.has(j.status)).map((j) => path.resolve(j.serveDir)));
-    if (!(await sites.remove(name, (dir) => active.has(path.resolve(dir))))) throw new HttpError(404, `No site "${name}".`);
+    // Evaluated when the delete actually runs (after any deploy in flight), not when the request arrived.
+    const inUse = (dir: string) =>
+      store.all().some((j) => !TERMINAL.has(j.status) && path.resolve(j.serveDir) === path.resolve(dir));
+    if (!(await sites.remove(name, inUse))) throw new HttpError(404, `No site "${name}".`);
     return c.json({ deleted: true });
   });
 
@@ -148,12 +150,12 @@ export function createApp({ cfg, store, queue, sites, runner, version, draining 
       try {
         await assertPublicUrl(req.webhookUrl, cfg.ALLOW_PRIVATE_URLS);
       } catch (err) {
-        if (err instanceof UnsafeTargetError) throw new HttpError(400, `webhookUrl: ${err.message}`);
+        if (err instanceof UnsafeTargetError || err instanceof ResolveError) throw new HttpError(400, `webhookUrl: ${err.message}`);
         throw err;
       }
     }
     // Validated and cleaned now, so bad props are a 400 rather than a failed job.
-    const props = await checkProps(cfg, req.site, req.composition, req.props);
+    const props = await checkProps(cfg, req.site, req.composition, req.props, req.kind);
     const serveDir = await sites.serveDir(req.site);
     // No await from here to push(): the capacity check and the enqueue happen together.
     if (queue.isFull()) throw new HttpError(429, "The render queue is full. Try again shortly.");

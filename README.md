@@ -89,13 +89,17 @@ Verify with the client:
 
 ```ts
 import { verifyWebhook } from "@banfimatei/video-kit/client";
-const ok = await verifyWebhook(rawBody, req.headers["x-video-kit-signature"], { apiKey: process.env.VIDEO_KIT_API_KEY! });
-// or { secret: WEBHOOK_SECRET } if the service sets one
+const ok = await verifyWebhook(rawBody, req.headers["x-video-kit-signature"], { secret: process.env.VIDEO_KIT_WEBHOOK_SECRET! });
 ```
 
-The webhook key is `WEBHOOK_SECRET`, or else HMAC-SHA256(`RENDER_API_KEY`,
-`"video-kit:webhook"`). It is separate from the key that signs file links, so
-a receiver can't mint download links.
+The webhook key is the service's `WEBHOOK_SECRET`, or, when that isn't set,
+the lowercase hex of HMAC-SHA256(`RENDER_API_KEY`, `"video-kit:webhook"`),
+used as a UTF-8 string key (`webhookSecretFromApiKey(apiKey)` computes it).
+Outside TypeScript: the signature is the hex HMAC-SHA256 of the raw body under
+that key. Give receivers that key,
+never the API key: it only verifies webhooks, while the API key can call the
+whole API and sign download links. A receiver that is the same app that
+calls the API already holds the key, and may pass `{ apiKey }` instead.
 
 Limits (environment variables, defaults in brackets): `MAX_QUEUE` (25),
 `MAX_RENDER_SECONDS` (180, the video's length), `JOB_TIMEOUT_MINUTES` (45),
@@ -121,8 +125,9 @@ each scene stretched to fit its line; quiet house sound design. Full schema:
 | `soundDesign` | `house` (default) or `none` |
 | `sfx[]` | Extra sounds: `{ sound, at, scene?, volume?, playbackRate? }`, where `sound` is a house cue, `remotion:<name>` from [@remotion/sfx](https://www.remotion.dev/docs/sfx), or an https URL |
 
-Type is sized to fit: the longest title and body the schema allows still sit
-clear of the brand and footer at every aspect. A request whose scenes alone
+Type is sized to fit the space between the brand and the footer: long titles
+and bodies (all caps included) shrink, words too long for a line break, and a
+long brand name or URL is cut with an ellipsis. A request whose scenes alone
 run past `MAX_RENDER_SECONDS` is a `400` before any voice is paid for.
 
 ### Your own compositions: sites
@@ -131,9 +136,9 @@ When the built-ins aren't enough, render your project's own Remotion
 compositions (your brand, your layouts) on the service:
 
 ```bash
-# in your Remotion project
+# in your Remotion project, with the library installed (see below)
 npx video-kit site deploy myproject             # bundles src/index.ts, uploads it
-npx video-kit render MyComposition --site=myproject --props=props.json --out=out.mp4
+npx video-kit render MyComposition --site myproject --props props.json --out out.mp4
 ```
 
 Without the CLI, upload the output of `npx remotion bundle` yourself:
@@ -153,8 +158,13 @@ override), run `npx remotion bundle` and deploy that with `--bundle build`.
 ## Use the library in a Remotion project
 
 ```bash
-npm install github:banfimatei/video-kit    # needs read access to this repo
+# needs read access to this repo; the Remotion packages are peers, at the same version as your remotion
+npm install github:banfimatei/video-kit @remotion/media @remotion/sfx zod
+npm install @remotion/bundler @remotion/renderer   # only for renderComposition / the CLI in Node
 ```
+
+A project that only calls the service needs just the first package: the
+client is fetch-only, and every peer is optional.
 
 Inside compositions:
 
@@ -219,8 +229,9 @@ new services, so these are service settings:
 | Volume | mounted at `/data` (renders, sites, voice cache, job records) |
 | Healthcheck | path `/healthz`, timeout 300s (boot starts a Chrome to list the built-in templates) |
 | Restart policy | on failure, 5 retries |
-| Draining | variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300`: how long running renders get to finish on a redeploy |
-| Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile` (docs-only commits don't restart it) |
+| Draining | the **variable** `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300` (not the Settings field: the service reads the variable to know its window, and logs it at boot) |
+| Start Command | leave empty. A start command replaces the image's entrypoint (`dumb-init`), and then renders can't drain on redeploy |
+| Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile`, `/.dockerignore` (docs-only commits don't restart it) |
 | Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) |
 | Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 

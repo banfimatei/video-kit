@@ -7,18 +7,11 @@ import type { Sites } from "./sites.js";
 const DAY = 86_400_000;
 
 /**
- * Delete finished renders past RETENTION_DAYS, stale voice clips, old site
- * versions and orphaned temp files. Never touches what a queued or running
- * render still needs: its site version, and (while anything runs) the voice
- * cache.
+ * Delete finished renders past RETENTION_DAYS, voice clips unused for
+ * VOICE_CACHE_DAYS, old site versions and orphaned temp files. Never touches
+ * a site version a queued or running render still needs.
  */
-export async function sweep(
-  cfg: Config,
-  store: JobStore,
-  sites: Sites,
-  log: (m: string) => void,
-  busy: () => boolean = () => false,
-): Promise<void> {
+export async function sweep(cfg: Config, store: JobStore, sites: Sites, log: (m: string) => void): Promise<void> {
   const now = Date.now();
   let removed = 0;
   for (const job of store.all()) {
@@ -40,8 +33,8 @@ export async function sweep(
       }
     }
   };
-  // Clips are touched on every use, so age is time since last use; skip anyway while renders run.
-  if (!busy()) await olderThan(cfg.voiceDir, cfg.VOICE_CACHE_DAYS * DAY);
+  // Clips are touched on every use, so a clip's age is the time since a render last used it.
+  await olderThan(cfg.voiceDir, cfg.VOICE_CACHE_DAYS * DAY);
   await olderThan(cfg.tmpDir, DAY);
   // Render dirs with no job record (e.g. after a crash mid-write).
   await olderThan(cfg.rendersDir, DAY, (name) => Boolean(store.get(name)));

@@ -58,7 +58,7 @@ jobs:
       - run: docker build -t video-kit:ci .
       - name: Boot the image and check health
         run: |
-          docker run -d --name vk -p 8080:8080 -e RENDER_API_KEY=ci-key-0123456789abcdef video-kit:ci
+          docker run -d --name vk -p 8080:8080 -e RENDER_API_KEY=ci-key-0123456789abcdef -e DRAINING_SECONDS=90 video-kit:ci
           for i in $(seq 1 60); do curl -sf localhost:8080/healthz && exit 0; sleep 2; done
           docker logs vk; exit 1
       - name: Render a still inside the image
@@ -76,8 +76,18 @@ jobs:
           curl -s localhost:8080/v1/renders/$id -H "Authorization: Bearer ci-key-0123456789abcdef"; docker logs vk; exit 1
       - name: CJK fonts are installed
         run: docker run --rm --entrypoint fc-list video-kit:ci :lang=ja family | grep -q .
-      - name: docker stop drains (dumb-init turns SIGTERM into the service's drain signal)
+      - name: docker stop lets a running render finish (dumb-init turns SIGTERM into the drain signal)
         run: |
-          docker stop -t 30 vk
-          docker logs vk 2>&1 | tee vk.log | tail -5
-          grep -q "SIGUSR2: stopping" vk.log
+          curl -sf -X POST localhost:8080/v1/renders -H "Authorization: Bearer ci-key-0123456789abcdef" \
+            -H "Content-Type: application/json" \
+            -d '{"composition":"Story","poster":false,"props":{"scenes":[{"title":"Running at docker stop","seconds":6}]}}' > job.json
+          id=$(jq -r .id job.json)
+          for i in $(seq 1 60); do
+            stage=$(curl -sf localhost:8080/v1/renders/$id -H "Authorization: Bearer ci-key-0123456789abcdef" | jq -r .stage)
+            [ "$stage" = rendering ] && break
+            sleep 1
+          done
+          docker stop -t 100 vk
+          docker logs vk 2>&1 | tee vk.log | tail -8
+          grep -q "SIGUSR2: stopping; 1 running" vk.log
+          grep -q "render $id builtin/Story done" vk.log

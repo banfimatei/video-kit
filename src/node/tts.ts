@@ -239,27 +239,38 @@ export interface VoiceNarrationOptions {
  * Clips being written right now, by path: two renders voicing the same line
  * at once share one request instead of racing on the same file.
  */
-const inFlight = new Map<string, Promise<void>>();
+const inFlight = new Map<string, Promise<number>>();
+
+/** Seconds of audio in `file`, or null if it isn't a playable clip. */
+async function playableSeconds(file: string): Promise<number | null> {
+  const seconds = await audioDuration(file).catch(() => NaN);
+  return seconds > 0 ? seconds : null;
+}
 
 /**
- * Make sure `file` holds a good clip: reuse it, share another caller's
- * request for it, or synthesize it. A new clip is measured before it enters
- * the cache, so an empty or non-audio response is an error now rather than
- * a poisoned cache entry every later render trips over.
+ * Make sure `file` holds a good clip and return its length: reuse it, share
+ * another caller's request for it, or synthesize it. Every clip is measured
+ * before it is trusted, so an empty or non-audio response is an error now,
+ * and a bad file already in the cache is replaced rather than failing every
+ * render that needs the line.
  */
-async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Promise<void> {
+async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Promise<number> {
   if (existsSync(file)) {
-    // Touch on use, so a cache sweep by age keeps clips that are still being rendered.
-    const now = new Date();
-    await utimes(file, now, now).catch(() => undefined);
-    return;
+    const seconds = await playableSeconds(file);
+    if (seconds !== null) {
+      // Touch on use, so a cache sweep by age keeps clips that are still being rendered.
+      const now = new Date();
+      await utimes(file, now, now).catch(() => undefined);
+      return seconds;
+    }
+    await rm(file, { force: true });
   }
   const pending = inFlight.get(file);
   if (pending) {
     // Share the other render's request; if it failed (say it was canceled), try ourselves.
-    const ok = await pending.then(() => true, () => false);
-    if (ok || existsSync(file)) return;
-    if (inFlight.has(file)) return ensureClip(file, synthesize);
+    const seconds = await pending.catch(() => null);
+    if (seconds !== null) return seconds;
+    return ensureClip(file, synthesize);
   }
   const write = (async () => {
     const audio = await synthesize();
@@ -268,9 +279,10 @@ async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Prom
     const tmp = `${file}.${randomUUID()}.tmp`;
     try {
       await writeFile(tmp, audio);
-      const seconds = await audioDuration(tmp).catch(() => NaN);
-      if (!(seconds > 0)) throw new Error("The TTS provider returned something that isn't playable audio.");
+      const seconds = await playableSeconds(tmp);
+      if (seconds === null) throw new Error("The TTS provider returned something that isn't playable audio.");
       await rename(tmp, file);
+      return seconds;
     } catch (err) {
       await rm(tmp, { force: true }).catch(() => undefined);
       throw err;
@@ -278,7 +290,7 @@ async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Prom
   })();
   inFlight.set(file, write);
   try {
-    await write;
+    return await write;
   } finally {
     inFlight.delete(file);
   }
@@ -301,8 +313,8 @@ export async function voiceNarration(narration: Narration, opts: VoiceNarrationO
     const hash = createHash("sha256").update(`${opts.provider}\n${tts.voice}\n${clean}`).digest("hex").slice(0, 24);
     const name = `${hash}.${tts.ext}`;
     const file = path.join(opts.dir, name);
-    await ensureClip(file, () => tts.synthesize(clean, opts.signal));
-    const clip: VoiceClip = { src: toSrc(name), durationInSeconds: await audioDuration(file) };
+    const seconds = await ensureClip(file, () => tts.synthesize(clean, opts.signal));
+    const clip: VoiceClip = { src: toSrc(name), durationInSeconds: seconds };
     out[scene] = clip;
   }
   return out;

@@ -71,6 +71,7 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
               lineHeight: 1.25,
               letterSpacing: 4 * unit,
               textTransform: "uppercase",
+              overflowWrap: "anywhere",
               color: theme.accent,
               marginBottom: Math.round(type.kickerGap),
               opacity: interpolate(frame, [start, start + 18], [0, 1], ease),
@@ -95,6 +96,8 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
               <span
                 style={{
                   display: "inline-block",
+                  maxWidth: "100%",
+                  overflowWrap: "anywhere",
                   opacity: interpolate(frame, [wordAt(i), wordAt(i) + 12], [0, 1], ease),
                   translate: interpolate(frame, [wordAt(i), wordAt(i) + 12], ["0px 20px", "0px 0px"], ease),
                 }}
@@ -113,6 +116,7 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
               fontWeight: 400,
               fontSize: type.body,
               lineHeight: 1.35,
+              overflowWrap: "anywhere",
               color: theme.muted,
               marginTop: type.bodyGap,
               opacity: interpolate(frame, [bodyAt, bodyAt + 18], [0, 1], ease),
@@ -148,10 +152,13 @@ export const Chrome: React.FC<{ props: ParsedStoryProps; layout: StoryFrame }> =
             fontWeight: 700,
             fontSize: Math.round(38 * unit),
             color: theme.foreground,
+            // One line, never wider than the frame: storyFrame() reserves exactly one.
+            maxWidth: layout.width - 2 * side,
+            whiteSpace: "nowrap",
           }}
         >
-          <div style={{ width: 22 * unit, height: 22 * unit, borderRadius: 999, backgroundColor: theme.accent }} />
-          {brand.name}
+          <div style={{ flexShrink: 0, width: 22 * unit, height: 22 * unit, borderRadius: 999, backgroundColor: theme.accent }} />
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{brand.name}</span>
         </Interactive.Div>
       ) : null}
       {footer || brand?.url ? (
@@ -170,7 +177,17 @@ export const Chrome: React.FC<{ props: ParsedStoryProps; layout: StoryFrame }> =
             paddingTop: Math.round(24 * unit),
           }}
         >
-          <div style={{ flex: 1, minWidth: 0, fontFamily: FONT_STACK.mono, fontSize: Math.round(24 * unit), lineHeight: 1.45, color: theme.muted }}>
+          <div
+            style={{
+              flex: 1,
+              minWidth: 0,
+              overflowWrap: "anywhere",
+              fontFamily: FONT_STACK.mono,
+              fontSize: Math.round(24 * unit),
+              lineHeight: 1.45,
+              color: theme.muted,
+            }}
+          >
             {footer ?? ""}
           </div>
           {brand?.url ? (

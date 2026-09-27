@@ -66,13 +66,27 @@ export function isPrivateAddress(ip: string): boolean {
 
 const PRIVATE_NAME = /(^|\.)(localhost|internal|local|localdomain|home\.arpa)$/i;
 
+/** The target is refused for good: wrong scheme, credentials, or it is (or resolves to) a private address. */
 export class UnsafeTargetError extends Error {}
+/** The host couldn't be resolved just now; worth another try later. */
+export class ResolveError extends Error {}
+
+/** Resolve through c-ares (not the libuv threadpool, which file I/O needs), with a timeout. */
+async function resolveAll(host: string, timeoutMs: number): Promise<string[]> {
+  const resolver = new dns.promises.Resolver({ timeout: Math.max(500, Math.floor(timeoutMs / 2)), tries: 2 });
+  const [v4, v6] = await Promise.allSettled([resolver.resolve4(host), resolver.resolve6(host)]);
+  const found = [...(v4.status === "fulfilled" ? v4.value : []), ...(v6.status === "fulfilled" ? v6.value : [])];
+  if (found.length) return found;
+  const err = (v4.status === "rejected" ? v4.reason : v6.status === "rejected" ? v6.reason : null) as NodeJS.ErrnoException | null;
+  throw new ResolveError(`${host} does not resolve (${err?.code ?? "no addresses"}).`);
+}
 
 /**
  * Throw unless `url` is http(s) on a host that resolves only to public
- * addresses. With `allowPrivate`, only the scheme is checked.
+ * addresses. With `allowPrivate`, only the scheme is checked. A lookup
+ * failure is a ResolveError (retryable); anything else is UnsafeTargetError.
  */
-export async function assertPublicUrl(url: string, allowPrivate = false): Promise<URL> {
+export async function assertPublicUrl(url: string, allowPrivate = false, timeoutMs = 4000): Promise<URL> {
   let u: URL;
   try {
     u = new URL(url);
@@ -88,15 +102,53 @@ export async function assertPublicUrl(url: string, allowPrivate = false): Promis
     return u;
   }
   if (PRIVATE_NAME.test(host.replace(/\.$/, ""))) throw new UnsafeTargetError(`${host} is a private host name.`);
-  let addresses: LookupAddress[];
-  try {
-    addresses = await dns.promises.lookup(host, { all: true, verbatim: true });
-  } catch (err) {
-    throw new UnsafeTargetError(`${host} does not resolve (${(err as NodeJS.ErrnoException).code ?? "error"}).`);
-  }
-  const bad = addresses.find((a) => isPrivateAddress(a.address));
-  if (bad) throw new UnsafeTargetError(`${host} resolves to a private address (${bad.address}).`);
+  const bad = (await resolveAll(host, timeoutMs)).find((a) => isPrivateAddress(a));
+  if (bad) throw new UnsafeTargetError(`${host} resolves to a private address (${bad}).`);
   return u;
+}
+
+/**
+ * Check several URLs at once: at most `maxHosts` distinct hosts, all within
+ * `deadlineMs` in total. Throws UnsafeTargetError or ResolveError naming the
+ * first bad URL.
+ */
+export async function assertPublicUrls(
+  urls: string[],
+  { allowPrivate = false, maxHosts = 10, deadlineMs = 8000 }: { allowPrivate?: boolean; maxHosts?: number; deadlineMs?: number } = {},
+): Promise<void> {
+  const byHost = new Map<string, string>();
+  for (const url of urls) {
+    let host = url;
+    try {
+      host = new URL(url).host;
+    } catch {
+      // assertPublicUrl reports it
+    }
+    if (!byHost.has(host)) byHost.set(host, url);
+  }
+  if (byHost.size > maxHosts) {
+    throw new UnsafeTargetError(`The media comes from ${byHost.size} different hosts; the limit is ${maxHosts}.`);
+  }
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ResolveError("Checking the media hosts took too long.")), deadlineMs);
+    timer.unref();
+  });
+  try {
+    await Promise.race([
+      Promise.all(
+        [...byHost.values()].map((url) =>
+          assertPublicUrl(url, allowPrivate).catch((err: Error) => {
+            err.message = `${url.slice(0, 200)}: ${err.message}`;
+            throw err;
+          }),
+        ),
+      ),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
@@ -120,9 +172,11 @@ export const publicOnlyLookup: LookupFunction = (hostname, options, callback) =>
 };
 
 /**
- * POST a JSON body; resolves to the status code. No redirects are followed.
- * Unless `allowPrivate`, the target is re-checked and pinned to public
- * addresses for this connection.
+ * POST a JSON body; resolves to the status code as soon as the response
+ * headers arrive (the body is discarded). No redirects are followed. The
+ * whole exchange, connect included, is bounded by `timeoutMs`. Unless
+ * `allowPrivate`, the target is re-checked and pinned to public addresses
+ * for this connection.
  */
 export async function postJson(
   url: string,
@@ -139,16 +193,15 @@ export async function postJson(
         method: "POST",
         headers: { ...headers, "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
         lookup: allowPrivate ? undefined : publicOnlyLookup,
-        timeout: timeoutMs,
+        signal: AbortSignal.timeout(timeoutMs),
       },
       (res) => {
-        res.resume();
-        res.on("end", () => resolve(res.statusCode ?? 0));
-        res.on("error", reject);
+        resolve(res.statusCode ?? 0);
+        // Nothing reads the body; don't let a receiver hold the socket open with it.
+        res.destroy();
       },
     );
-    req.on("timeout", () => req.destroy(new Error(`timed out after ${timeoutMs}ms`)));
-    req.on("error", reject);
+    req.on("error", (err) => reject(err.name === "AbortError" ? new Error(`timed out after ${timeoutMs}ms`) : err));
     req.end(body);
   });
 }

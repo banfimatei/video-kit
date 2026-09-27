@@ -4,18 +4,46 @@
  * the longest title, body, footer and URL the schema allows still fit the
  * smallest aspect (1:1) without touching each other.
  *
- * Text is measured by estimate: an average advance per character for each
- * face (Inter, Newsreader, JetBrains Mono), and a greedy word wrap. The
- * averages lean wide, so real text comes out a little smaller than the
- * space, never larger.
+ * Text is measured by estimate: an advance per character class (capitals,
+ * lower case, digits, narrow punctuation) for each face (Inter, Newsreader,
+ * JetBrains Mono), and a greedy word wrap that breaks over-long words the way
+ * `overflow-wrap: anywhere` does in the components. The advances lean wide,
+ * so real text comes out a little smaller than the space, never larger.
+ * story.test.ts checks the estimate; after changing it, render stills of the
+ * extremes too (all caps, unbroken strings, the longest allowed text).
  */
 
 type Face = "sans" | "serif" | "mono";
 type ChromeText = { brand?: { name?: string; url?: string } | null; footer?: string | null };
 type SceneText = { kicker?: string; title: string; body?: string };
 
-/** Average advance per character, as a fraction of the font size. */
-const ADVANCE = { sansBold: 0.6, sans: 0.55, serif: 0.54, mono: 0.6 } as const;
+/** Advance per character class, as a fraction of the font size (measured on the bundled faces, rounded up). */
+const CLASSES = {
+  sansBold: { upper: 0.74, lower: 0.58, digit: 0.64, narrow: 0.32, other: 0.74 },
+  sans: { upper: 0.7, lower: 0.54, digit: 0.6, narrow: 0.3, other: 0.7 },
+  serif: { upper: 0.72, lower: 0.5, digit: 0.56, narrow: 0.3, other: 0.72 },
+} as const;
+type Metrics = (typeof CLASSES)[keyof typeof CLASSES];
+const MONO = 0.6;
+
+/** Advance per character for a face: a lookup for proportional faces, a constant for mono. */
+function advanceOf(metrics: Metrics | "mono", size: number, tracking = 0): (ch: string) => number {
+  if (metrics === "mono") return () => size * MONO + tracking;
+  return (ch) => {
+    const m = /[A-Z]/.test(ch)
+      ? metrics.upper
+      : /[a-z]/.test(ch)
+        ? /[ijlft]/.test(ch)
+          ? metrics.narrow + 0.08
+          : metrics.lower
+        : /[0-9]/.test(ch)
+          ? metrics.digit
+          : /[.,:;'!|()\-\s]/.test(ch)
+            ? metrics.narrow
+            : metrics.other;
+    return size * m + tracking;
+  };
+}
 
 export interface StoryFrame {
   width: number;
@@ -33,16 +61,22 @@ export interface StoryFrame {
   content: { top: number; bottom: number; width: number; height: number };
 }
 
-/** Lines `text` wraps to at `advance` px per character in a `width` px column. */
-export function wrapLines(text: string, advance: number, width: number, spaceWidth = advance * 0.5): number {
+/**
+ * Lines `text` wraps to in a `width` px column, given each character's
+ * advance (a function, or a constant for monospace) and a space's width.
+ */
+export function wrapLines(text: string, advance: number | ((ch: string) => number), width: number, spaceWidth?: number): number {
+  const adv = typeof advance === "number" ? () => advance : advance;
+  const space = spaceWidth ?? adv(" ");
   let lines = 1;
   let x = 0;
   for (const word of text.split(/\s+/).filter(Boolean)) {
-    const w = word.length * advance;
+    let w = 0;
+    for (const ch of word) w += adv(ch);
     if (x === 0) {
       x = w;
-    } else if (x + spaceWidth + w <= width) {
-      x += spaceWidth + w;
+    } else if (x + space + w <= width) {
+      x += space + w;
       continue;
     } else {
       lines++;
@@ -70,9 +104,9 @@ export function storyFrame(props: ChromeText, width: number, height: number): St
   const footerBottom = Math.round(height * (portrait ? 0.09 : 0.07));
   const urlMaxWidth = Math.round(row * 0.45);
   const url = props.brand?.url ?? "";
-  const urlWidth = url ? Math.min(urlMaxWidth, url.length * 30 * unit * ADVANCE.mono) : 0;
+  const urlWidth = url ? Math.min(urlMaxWidth, url.length * 30 * unit * MONO) : 0;
   const footerWidth = row - urlWidth - (url ? 40 * unit : 0);
-  const footerAdvance = 24 * unit * ADVANCE.mono;
+  const footerAdvance = 24 * unit * MONO;
   // Monospace: a space is as wide as any other character.
   const footerLines = props.footer ? wrapLines(props.footer, footerAdvance, footerWidth, footerAdvance) : 0;
   const footerHeight =
@@ -94,6 +128,9 @@ export function storyFrame(props: ChromeText, width: number, height: number): St
   };
 }
 
+/** The smallest the type gets: below this the schema's limits would need to shrink instead. */
+const MIN_SCALE = 0.3;
+
 export interface SceneType {
   kicker: number;
   kickerGap: number;
@@ -109,11 +146,11 @@ export function sceneType(scene: SceneText, font: Face, frame: StoryFrame): Scen
   const len = scene.title.length;
   const designTitle = (frame.height > frame.width ? 96 : 84) * unit * (len > 100 ? 0.66 : len > 60 ? 0.8 : 1);
   const tracking = font === "mono" ? 0 : -1.5 * unit;
-  const titleAdvance = font === "sans" ? ADVANCE.sansBold : font === "serif" ? ADVANCE.serif : ADVANCE.mono;
+  const titleMetrics = font === "sans" ? CLASSES.sansBold : font === "serif" ? CLASSES.serif : ("mono" as const);
 
   const kicker = 30 * unit;
   const kickerGap = 32 * unit;
-  const kickerAdvance = kicker * ADVANCE.mono + 4 * unit; // mono plus letter spacing, spaces included
+  const kickerAdvance = kicker * MONO + 4 * unit; // mono plus letter spacing, spaces included
   const kickerHeight = scene.kicker
     ? wrapLines(scene.kicker, kickerAdvance, content.width, kickerAdvance) * kicker * 1.25 + kickerGap
     : 0;
@@ -127,15 +164,15 @@ export function sceneType(scene: SceneText, font: Face, frame: StoryFrame): Scen
     bodyGap: Math.round(40 * unit * s),
   });
   const needed = (t: SceneType) => {
-    const titleSpace = font === "mono" ? t.title * ADVANCE.mono : t.title * 0.28;
-    const titleLines = wrapLines(scene.title, t.title * titleAdvance + t.titleTracking, content.width, titleSpace);
-    const bodyLines = scene.body ? wrapLines(scene.body, t.body * ADVANCE.sans, content.width, t.body * 0.28) : 0;
+    const titleSpace = font === "mono" ? t.title * MONO : t.title * 0.28;
+    const titleLines = wrapLines(scene.title, advanceOf(titleMetrics, t.title, t.titleTracking), content.width, titleSpace);
+    const bodyLines = scene.body ? wrapLines(scene.body, advanceOf(CLASSES.sans, t.body), content.width, t.body * 0.28) : 0;
     return kickerHeight + titleLines * t.title * 1.08 + (scene.body ? t.bodyGap + bodyLines * t.body * 1.35 : 0);
   };
 
-  for (let s = 1; s > 0.4; s -= 0.025) {
+  for (let s = 1; s > MIN_SCALE; s -= 0.025) {
     const t = at(s);
     if (needed(t) <= content.height) return t;
   }
-  return at(0.4);
+  return at(MIN_SCALE);
 }

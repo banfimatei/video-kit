@@ -95,6 +95,8 @@ export class VideoKitError extends Error {
     message: string,
     readonly status: number,
     readonly body: unknown,
+    /** Seconds the server asked to wait (Retry-After), if it said. */
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "VideoKitError";
@@ -105,11 +107,46 @@ export interface VideoKitClientOptions {
   baseUrl: string;
   apiKey: string;
   fetch?: typeof fetch;
+  /**
+   * How many times render() and deploySite() retry a 429 (queue full) or 503
+   * (service restarting), honouring Retry-After. Nothing was created on
+   * those, so a retry can't duplicate work. Default 5; 0 turns it off.
+   */
+  retries?: number;
+  /** For tests. */
+  sleep?: (ms: number) => Promise<void>;
 }
+
+/** Statuses that mean "try again shortly": queue full, restarting, or a proxy in between saw no service. */
+const TRANSIENT = new Set([429, 502, 503, 504]);
+
+/** True for errors worth retrying a read on: a transient status, or no response at all. */
+function isTransient(err: unknown): boolean {
+  if (err instanceof VideoKitError) return TRANSIENT.has(err.status);
+  return err instanceof TypeError; // fetch's network failure (connection refused, reset, DNS)
+}
+
+const backoff = (attempt: number, retryAfter?: number) =>
+  retryAfter && retryAfter > 0 ? Math.min(retryAfter, 120) * 1000 : Math.min(30_000, 1000 * 2 ** attempt);
 
 export function createVideoKitClient(opts: VideoKitClientOptions) {
   const base = opts.baseUrl.replace(/\/+$/, "");
   const fetchImpl = opts.fetch ?? fetch;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const retries = opts.retries ?? 5;
+
+  /** Run a request that creates nothing on 429/503, retrying those. */
+  async function submit<T>(send: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await send();
+      } catch (err) {
+        const again = err instanceof VideoKitError && (err.status === 429 || err.status === 503) && attempt < retries;
+        if (!again) throw err;
+        await sleep(backoff(attempt, err.retryAfter));
+      }
+    }
+  }
 
   async function call<T>(method: string, route: string, body?: unknown, headers: Record<string, string> = {}): Promise<T> {
     const isRaw = body instanceof Uint8Array || body instanceof ArrayBuffer || (typeof Blob !== "undefined" && body instanceof Blob);
@@ -139,7 +176,8 @@ export function createVideoKitClient(opts: VideoKitClientOptions) {
           .map((i: { path?: unknown; message?: unknown }) => (i.path ? `${String(i.path)}: ${String(i.message)}` : String(i.message)))
           .join("; ")})`;
       }
-      throw new VideoKitError(`${method} ${route} → ${res.status}: ${message}`, res.status, parsed);
+      const retryAfter = Number(res.headers.get("retry-after")) || undefined;
+      throw new VideoKitError(`${method} ${route} → ${res.status}: ${message}`, res.status, parsed, retryAfter);
     }
     return parsed as T;
   }
@@ -153,17 +191,30 @@ export function createVideoKitClient(opts: VideoKitClientOptions) {
     sites: () => call<{ sites: SiteInfo[] }>("GET", "/v1/sites").then((r) => r.sites),
     /** Upload a gzipped tarball of a `remotion bundle` directory as site `name` (replacing any previous one). */
     deploySite: (name: string, tarball: Uint8Array | ArrayBuffer | Blob) =>
-      call<SiteInfo>("PUT", `/v1/sites/${encodeURIComponent(name)}`, tarball, { "Content-Type": "application/gzip" }),
+      submit(() => call<SiteInfo>("PUT", `/v1/sites/${encodeURIComponent(name)}`, tarball, { "Content-Type": "application/gzip" })),
     deleteSite: (name: string) => call<{ deleted: boolean }>("DELETE", `/v1/sites/${encodeURIComponent(name)}`),
-    render: (req: RenderRequest) => call<RenderJob>("POST", "/v1/renders", req),
+    render: (req: RenderRequest) => submit(() => call<RenderJob>("POST", "/v1/renders", req)),
     get: (id: string) => call<RenderJob>("GET", `/v1/renders/${encodeURIComponent(id)}`),
     list: () => call<{ renders: RenderJob[] }>("GET", "/v1/renders").then((r) => r.renders),
     cancel: (id: string) => call<RenderJob>("DELETE", `/v1/renders/${encodeURIComponent(id)}`),
-    /** Poll until the job is done, failed or canceled. Throws on failure unless `throwOnFailure: false`. */
+    /**
+     * Poll until the job is done, failed or canceled. Throws on failure unless
+     * `throwOnFailure: false`. Rides out a restarting service (connection
+     * refused, 502/503/504, 429) until the timeout: jobs survive restarts.
+     */
     async wait(id: string, o: WaitOptions = {}): Promise<RenderJob> {
       const deadline = Date.now() + (o.timeoutMs ?? 15 * 60_000);
+      let misses = 0;
       for (;;) {
-        const job = await client.get(id);
+        let job: RenderJob;
+        try {
+          job = await client.get(id);
+          misses = 0;
+        } catch (err) {
+          if (!isTransient(err) || Date.now() > deadline) throw err;
+          await sleep(backoff(misses++, err instanceof VideoKitError ? err.retryAfter : undefined));
+          continue;
+        }
         o.onProgress?.(job);
         if (job.status === "done") return job;
         if (job.status === "failed" || job.status === "canceled") {
@@ -171,7 +222,7 @@ export function createVideoKitClient(opts: VideoKitClientOptions) {
           throw new VideoKitError(`Render ${id} ${job.status}: ${job.error ?? "no error given"}`, 500, job);
         }
         if (Date.now() > deadline) throw new VideoKitError(`Render ${id} still ${job.status} after timeout`, 504, job);
-        await new Promise((r) => setTimeout(r, o.intervalMs ?? 2000));
+        await sleep(o.intervalMs ?? 2000);
       }
     },
     async renderAndWait(req: RenderRequest, o?: WaitOptions): Promise<RenderJob> {
@@ -202,7 +253,8 @@ async function hmacHex(key: string, data: string): Promise<string> {
 
 /**
  * The key webhooks are signed with when the service has no WEBHOOK_SECRET of
- * its own: derived from the API key, so whoever can call the API can verify.
+ * its own: the lowercase hex of HMAC-SHA256(apiKey, "video-kit:webhook"),
+ * used as a UTF-8 string key (not the raw digest bytes).
  */
 export function webhookSecretFromApiKey(apiKey: string): Promise<string> {
   return hmacHex(apiKey, "video-kit:webhook");
@@ -215,10 +267,12 @@ export function webhookSecretFromApiKey(apiKey: string): Promise<string> {
  */
 export async function verifyWebhook(
   rawBody: string,
-  signature: string | null | undefined,
+  /** The X-Video-Kit-Signature header, as your framework gives it (Node's req.headers may give an array). */
+  signature: string | string[] | null | undefined,
   key: { secret: string } | { apiKey: string },
 ): Promise<boolean> {
-  const m = /^sha256=([0-9a-f]{64})$/.exec(signature ?? "");
+  const header = Array.isArray(signature) ? signature[0] : signature;
+  const m = /^sha256=([0-9a-f]{64})$/.exec(header ?? "");
   if (!m) return false;
   const secret = "secret" in key ? key.secret : await webhookSecretFromApiKey(key.apiKey);
   const want = await hmacHex(secret, rawBody);

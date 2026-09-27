@@ -9,6 +9,9 @@ export const ASPECTS = {
   "16:9": { width: 1920, height: 1080 },
 } as const;
 
+const HTTPS = /^https:\/\//i;
+const DATA_IMAGE = /^data:image\/(png|jpeg|webp|gif);base64,[A-Za-z0-9+/=\s]+$/;
+
 export const storySceneSchema = z.object({
   /** Stable id for narration, voiceover and sfx keys, unique within the video. Default s0, s1, … */
   id: z
@@ -19,11 +22,10 @@ export const storySceneSchema = z.object({
   kicker: z.string().max(80).optional(),
   title: z.string().min(1).max(160),
   body: z.string().max(400).optional(),
-  /** Full-bleed background image (https URL), slowly zoomed, darkened under the type. */
+  /** Full-bleed background image (https URL or a data: PNG/JPEG/WebP/GIF), slowly zoomed, darkened under the type. */
   image: z
     .string()
-    .url()
-    .refine((u) => /^https:\/\//i.test(u), "image must be an https URL")
+    .refine((u) => HTTPS.test(u) || DATA_IMAGE.test(u), "image must be an https URL or a data:image/(png|jpeg|webp|gif);base64 URI")
     .optional(),
   /** What the voice says over this scene. */
   narration: z.string().max(1200).optional(),
@@ -31,11 +33,21 @@ export const storySceneSchema = z.object({
   seconds: z.number().positive().max(60).optional(),
 });
 
+/**
+ * A hex colour, #rgb or #rrggbb, always output as #rrggbb. Colours go into
+ * CSS (and get alpha suffixes appended, like `${background}99`), so nothing
+ * but a plain hex value may get through.
+ */
+const hexColor = z
+  .string()
+  .regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/, "colours are hex: #rgb or #rrggbb")
+  .transform((c) => (c.length === 4 ? `#${[...c.slice(1)].map((d) => d + d).join("")}` : c).toUpperCase());
+
 export const storyThemeSchema = z.object({
-  background: z.string().default("#121212"),
-  foreground: z.string().default("#F5F3EE"),
-  muted: z.string().default("#A8A39A"),
-  accent: z.string().default("#6C84FF"),
+  background: hexColor.default("#121212"),
+  foreground: hexColor.default("#F5F3EE"),
+  muted: hexColor.default("#A8A39A"),
+  accent: hexColor.default("#6C84FF"),
   /** Headline face; body text is always the sans. */
   font: z.enum(["serif", "sans", "mono"]).default("sans"),
 });
@@ -93,14 +105,14 @@ const REMOTION_SOUNDS = new Set(Object.keys(remotionSfx));
 function isStorySound(sound: string): boolean {
   if ((HOUSE_SOUNDS as readonly string[]).includes(sound)) return true;
   if (sound.startsWith("remotion:")) return REMOTION_SOUNDS.has(sound.slice("remotion:".length));
-  return /^https:\/\//i.test(sound);
+  return HTTPS.test(sound);
 }
 
 /** Every remote URL the props make Chrome fetch (the service checks each host). */
 export function storyUrls(props: ParsedStoryProps): string[] {
   return [
-    ...props.scenes.flatMap((s) => (s.image ? [s.image] : [])),
-    ...(props.sfx ?? []).flatMap((c) => (/^https:\/\//i.test(c.sound) ? [c.sound] : [])),
+    ...props.scenes.flatMap((s) => (s.image && HTTPS.test(s.image) ? [s.image] : [])),
+    ...(props.sfx ?? []).flatMap((c) => (HTTPS.test(c.sound) ? [c.sound] : [])),
   ];
 }
 

@@ -12,9 +12,9 @@ const envSchema = z.object({
   /** Signs file URLs. Default: derived from RENDER_API_KEY, so rotating the key revokes old URLs. */
   SIGNING_SECRET: z.string().min(16).optional(),
   /**
-   * Signs webhook bodies; receivers hold it. Default: derived from
-   * RENDER_API_KEY (see webhookSecretFromApiKey in the client). Separate from
-   * SIGNING_SECRET, so a receiver can never mint file links.
+   * Signs webhook bodies; give receivers this (never RENDER_API_KEY).
+   * Default: derived from RENDER_API_KEY (webhookSecretFromApiKey in the
+   * client). Separate from SIGNING_SECRET, so it can't sign file links.
    */
   WEBHOOK_SECRET: z.string().min(16).optional(),
   /** Allow webhooks and template media URLs on private addresses (e.g. *.railway.internal siblings). Off: public hosts only. */
@@ -72,7 +72,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     voiceDir: path.join(dataDir, "voice"),
     tmpDir: path.join(dataDir, "tmp"),
     builtinBundleDir: path.resolve(c.BUILTIN_BUNDLE_DIR),
-    signingSecret: c.SIGNING_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:files").digest("hex"),
+    signingSecret: c.SIGNING_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:signing").digest("hex"),
     DRAINING_SECONDS: c.DRAINING_SECONDS ?? c.RAILWAY_DEPLOYMENT_DRAINING_SECONDS,
     webhookSecret: c.WEBHOOK_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:webhook").digest("hex"),
     /** Longest a file link may live: what the service issues, plus clock slack. */

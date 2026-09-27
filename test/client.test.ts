@@ -77,6 +77,67 @@ describe("errors", () => {
   });
 });
 
+describe("restarts", () => {
+  it("retries a render the service refused with 503/429, honouring Retry-After", async () => {
+    const replies = [
+      Response.json({ error: "restarting" }, { status: 503, headers: { "Retry-After": "7" } }),
+      Response.json({ error: "queue full" }, { status: 429 }),
+      Response.json(job("queued"), { status: 202 }),
+    ];
+    const sleeps: number[] = [];
+    const kit = createVideoKitClient({
+      baseUrl: "http://x",
+      apiKey: "k",
+      fetch: (async () => replies.shift()!) as unknown as typeof fetch,
+      sleep: async (ms) => void sleeps.push(ms),
+    });
+    expect((await kit.render({ composition: "Story" })).status).toBe("queued");
+    expect(sleeps).toEqual([7000, 2000]);
+  });
+
+  it("doesn't retry a render the service rejected", async () => {
+    let calls = 0;
+    const kit = createVideoKitClient({
+      baseUrl: "http://x",
+      apiKey: "k",
+      fetch: (async () => (calls++, Response.json({ error: "Invalid props" }, { status: 400 }))) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    await expect(kit.render({ composition: "Story" })).rejects.toThrow(/400/);
+    expect(calls).toBe(1);
+  });
+
+  it("keeps waiting through a restart: connection refused, 502, then done", async () => {
+    const replies: Array<Response | Error> = [
+      Response.json(job("running")),
+      new TypeError("fetch failed"),
+      new Response("Bad gateway", { status: 502 }),
+      Response.json(job("done", { result: { width: 1, height: 1, fps: 30, durationInSeconds: 1, voice: null, expiresAt: "t" } })),
+    ];
+    const kit = createVideoKitClient({
+      baseUrl: "http://x",
+      apiKey: "k",
+      fetch: (async () => {
+        const r = replies.shift()!;
+        if (r instanceof Error) throw r;
+        return r;
+      }) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    expect((await kit.wait("j1")).status).toBe("done");
+  });
+
+  it("still gives up on a job that is gone", async () => {
+    const kit = createVideoKitClient({
+      baseUrl: "http://x",
+      apiKey: "k",
+      fetch: (async () => Response.json({ error: "No such render." }, { status: 404 })) as unknown as typeof fetch,
+      sleep: async () => undefined,
+    });
+    await expect(kit.wait("j1")).rejects.toThrow(/404/);
+  });
+});
+
 describe("verifyWebhook", () => {
   const body = JSON.stringify({ id: "j1", status: "done" });
   const sign = (secret: string, b = body) => `sha256=${createHmac("sha256", secret).update(b).digest("hex")}`;

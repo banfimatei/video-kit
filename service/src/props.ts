@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { Config } from "./config.js";
-import { assertPublicUrl, UnsafeTargetError } from "./net.js";
+import { assertPublicUrls, ResolveError, UnsafeTargetError } from "./net.js";
 import { BUILTIN, HttpError } from "./sites.js";
 import { BUILTIN_TEMPLATES } from "./templates.js";
 
@@ -13,12 +13,15 @@ import { BUILTIN_TEMPLATES } from "./templates.js";
  *   gone), and every remote URL in them must be on a public host.
  * - narration is capped (MAX_NARRATION_LINES, MAX_NARRATION_CHARS), since
  *   each line is a paid TTS call.
+ * - a video that can't fit MAX_RENDER_SECONDS is refused before any voice is
+ *   paid for (stills have no length limit).
  */
 export async function checkProps(
   cfg: Config,
   site: string,
   composition: string,
   raw: Record<string, unknown>,
+  kind: "video" | "still" = "video",
 ): Promise<Record<string, unknown>> {
   const { voiceover: _dropped, ...rest } = raw;
   let props: Record<string, unknown> = rest;
@@ -38,24 +41,22 @@ export async function checkProps(
       throw err;
     }
     const floor = template.minSeconds(props);
-    if (floor > cfg.MAX_RENDER_SECONDS) {
+    if (kind === "video" && floor > cfg.MAX_RENDER_SECONDS) {
       throw new HttpError(400, `These scenes run at least ${floor.toFixed(1)}s; the limit is ${cfg.MAX_RENDER_SECONDS}s.`);
     }
-    for (const url of new Set(template.urls(props))) {
-      try {
-        await assertPublicUrl(url, cfg.ALLOW_PRIVATE_URLS);
-      } catch (err) {
-        if (err instanceof UnsafeTargetError) throw new HttpError(400, `Refusing ${url.slice(0, 200)}: ${err.message}`);
-        throw err;
-      }
+    try {
+      await assertPublicUrls(template.urls(props), { allowPrivate: cfg.ALLOW_PRIVATE_URLS });
+    } catch (err) {
+      if (err instanceof UnsafeTargetError || err instanceof ResolveError) throw new HttpError(400, `Refusing media: ${err.message}`);
+      throw err;
     }
   }
 
-  checkNarration(cfg, props.narration);
+  checkNarration(cfg, props.narration, kind);
   return props;
 }
 
-function checkNarration(cfg: Config, narration: unknown): void {
+function checkNarration(cfg: Config, narration: unknown, kind: "video" | "still"): void {
   if (narration === undefined || narration === null) return;
   if (typeof narration !== "object" || Array.isArray(narration)) {
     throw new HttpError(400, "props.narration must be an object of scene id → text.");
@@ -75,7 +76,7 @@ function checkNarration(cfg: Config, narration: unknown): void {
     throw new HttpError(400, `props.narration is ${chars} characters; the limit is ${cfg.MAX_NARRATION_CHARS}.`);
   }
   // Even fast speech is under ~25 characters a second, so this much text can't fit the length limit.
-  if (chars / 25 > cfg.MAX_RENDER_SECONDS) {
+  if (kind === "video" && chars / 25 > cfg.MAX_RENDER_SECONDS) {
     throw new HttpError(400, `props.narration needs at least ${Math.round(chars / 25)}s of voice; the limit is ${cfg.MAX_RENDER_SECONDS}s.`);
   }
 }

@@ -204,15 +204,21 @@ export class Sites {
   /**
    * Delete a site. Refused (409) while `inUse` says a queued or running
    * render still reads one of its versions. Waits for any deploy in flight.
+   * The site stops existing for new renders (its meta.json goes) before the
+   * final in-use check, so a render can't slip in between check and delete.
    */
   async remove(name: string, inUse: (serveDir: string) => boolean): Promise<boolean> {
     const run = this.deploying.then(async () => {
-      if (!Sites.validName(name) || !(await this.meta(name))) return false;
+      const meta = await this.meta(name);
+      if (!meta) return false;
       const siteDir = path.join(this.cfg.sitesDir, name);
-      for (const v of await readdir(siteDir).catch(() => [] as string[])) {
-        if (inUse(path.join(siteDir, v))) {
-          throw new HttpError(409, `Site "${name}" has renders queued or running; cancel them or wait, then delete it.`);
-        }
+      const busy = async () => (await readdir(siteDir).catch(() => [] as string[])).some((v) => inUse(path.join(siteDir, v)));
+      const refuse = () => new HttpError(409, `Site "${name}" has renders queued or running; cancel them or wait, then delete it.`);
+      if (await busy()) throw refuse();
+      await rm(this.metaFile(name), { force: true });
+      if (await busy()) {
+        await writeFile(this.metaFile(name), JSON.stringify(meta));
+        throw refuse();
       }
       await rm(siteDir, { recursive: true, force: true });
       return true;

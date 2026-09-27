@@ -64,6 +64,11 @@ async function main(): Promise<void> {
     const a = server.address();
     const where = a && typeof a === "object" ? `${a.address}:${a.port}` : String(a);
     log(`listening on ${where} (data ${cfg.dataDir}, ${cfg.RENDER_CONCURRENCY} render(s) at a time)`);
+    log(
+      cfg.DRAINING_SECONDS > 15
+        ? `on redeploy, running renders get ${cfg.DRAINING_SECONDS - 15}s to finish (draining window ${cfg.DRAINING_SECONDS}s)`
+        : "on redeploy, running renders are stopped at once: set RAILWAY_DEPLOYMENT_DRAINING_SECONDS (a variable, e.g. 300) to let them finish",
+    );
   });
   server.on("error", (err: NodeJS.ErrnoException) => {
     // "::" needs IPv6; fall back to IPv4 where the host has none.
@@ -72,9 +77,7 @@ async function main(): Promise<void> {
   });
   listen(cfg.HOST);
 
-  const busy = () => queue.size.running > 0;
-  const runSweep = () =>
-    sweep(cfg, store, sites, log, busy).catch((err) => log(`retention failed: ${(err as Error).message}`));
+  const runSweep = () => sweep(cfg, store, sites, log).catch((err) => log(`retention failed: ${(err as Error).message}`));
   void runSweep();
   const timer = setInterval(runSweep, 3_600_000);
   timer.unref();

@@ -40,6 +40,33 @@ describe("Story props", () => {
   });
 });
 
+describe("Story props, round two", () => {
+  it("takes only hex theme colours (they go into CSS)", async () => {
+    t = await setup();
+    const post = (theme: object) => t.post({ composition: "Story", props: { theme, scenes: [{ title: "a" }] } });
+    expect((await post({ background: "#000 0%, #000 1%), url(https://127.0.0.1/x.png" })).status).toBe(400);
+    expect((await post({ accent: "red" })).status).toBe(400);
+    expect((await post({ muted: "rgb(1,2,3)" })).status).toBe(400);
+    expect((await post({ background: "#0a0", accent: "#6C84FF" })).status).toBe(202);
+    const p = prepareStoryProps({ theme: { background: "#0a0" }, scenes: [{ title: "a" }] });
+    expect(p.theme.background).toBe("#00AA00");
+  });
+
+  it("accepts inline raster images, which need no host", async () => {
+    t = await setup();
+    const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+    expect((await t.post({ composition: "Story", props: { scenes: [{ title: "a", image: png }] } })).status).toBe(202);
+    expect((await t.post({ composition: "Story", props: { scenes: [{ title: "a", image: "data:image/svg+xml;base64,PHN2Zz4=" }] } })).status).toBe(400);
+  });
+
+  it("doesn't hold a still to the video length limit", async () => {
+    t = await setup({ MAX_RENDER_SECONDS: "30" });
+    const scenes = [{ title: "a", seconds: 20 }, { title: "b", seconds: 20 }];
+    expect((await t.post({ composition: "Story", props: { scenes } })).status).toBe(400);
+    expect((await t.post({ composition: "Story", kind: "still", frame: 10, props: { scenes } })).status).toBe(202);
+  });
+});
+
 describe("Story layout", () => {
   const longest = {
     kicker: "K".repeat(80),

@@ -7,7 +7,8 @@ import { prepareStoryProps } from "../remotion/templates/story/schema.js";
 import { signBody, signPath, verifySignedPath } from "../src/auth.js";
 import { contentDisposition } from "../src/files.js";
 import { JobStore, RESTARTED, type StoredJob } from "../src/jobs.js";
-import { isPrivateAddress } from "../src/net.js";
+import { assertPublicUrl, isPrivateAddress, postJson, ResolveError, UnsafeTargetError } from "../src/net.js";
+import { renderProps } from "../src/runner.js";
 import { sweep } from "../src/retention.js";
 import { auth, entry, KEY, never, setup, STORY, tgz, type Ctx } from "./helpers.js";
 
@@ -211,6 +212,52 @@ describe("webhooks", () => {
   });
 });
 
+describe("webhook transport", () => {
+  it("gives up on a receiver that trickles its response, at the deadline", async () => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200);
+      const tick = setInterval(() => res.write("."), 200);
+      res.on("close", () => clearInterval(tick));
+    });
+    servers.push(server);
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/`;
+    const started = Date.now();
+    // Headers arrive at once: the status is the answer, the body is ignored.
+    expect(await postJson(url, "{}", {}, { timeoutMs: 1000, allowPrivate: true })).toBe(200);
+    expect(Date.now() - started).toBeLessThan(900);
+
+    const silent = createServer(() => undefined); // never answers
+    servers.push(silent);
+    await new Promise<void>((r) => silent.listen(0, "127.0.0.1", r));
+    const url2 = `http://127.0.0.1:${(silent.address() as { port: number }).port}/`;
+    await expect(postJson(url2, "{}", {}, { timeoutMs: 500, allowPrivate: true })).rejects.toThrow(/timed out/);
+  });
+
+  it("tells a lookup failure (retry later) from a refused target (never)", async () => {
+    await expect(assertPublicUrl("https://no-such-host.invalid/hook")).rejects.toBeInstanceOf(ResolveError);
+    await expect(assertPublicUrl("http://10.0.0.1/hook")).rejects.toBeInstanceOf(UnsafeTargetError);
+    await expect(assertPublicUrl("ftp://example.com/")).rejects.toBeInstanceOf(UnsafeTargetError);
+  });
+});
+
+describe("jobs stored by another version", () => {
+  it("are prepared again before rendering: no client voiceover, no sample defaults", () => {
+    const legacy = {
+      site: "builtin",
+      composition: "Story",
+      props: { aspect: "1:1", scenes: [{ title: "Old", narration: "Hello." }], voiceover: { s0: { src: "http://169.254.169.254/", durationInSeconds: 1 } } },
+    } as unknown as StoredJob;
+    const p = renderProps(legacy);
+    expect(p.voiceover).toBeNull();
+    expect(p.brand).toEqual({});
+    expect(p.footer).toBe("");
+    expect(p.narration).toEqual({ s0: "Hello." });
+    const site = renderProps({ site: "mysite", composition: "X", props: { a: 1, voiceover: {} } } as unknown as StoredJob);
+    expect(site).toEqual({ a: 1 });
+  });
+});
+
 describe("props", () => {
   it("never keeps a client voiceover (the service voices narration itself)", async () => {
     t = await setup();
@@ -350,16 +397,16 @@ describe("sites and retention", () => {
     expect((await t.call("/v1/sites/site", { method: "DELETE", headers: auth })).status).toBe(200);
   });
 
-  it("leaves the voice cache alone while renders run", async () => {
+  it("sweeps voice clips unused for VOICE_CACHE_DAYS and keeps recently used ones", async () => {
     t = await setup();
     mkdirSync(t.cfg.voiceDir, { recursive: true });
-    const clip = path.join(t.cfg.voiceDir, "0123456789abcdef01234567.wav");
-    writeFileSync(clip, "RIFF");
+    const stale = path.join(t.cfg.voiceDir, "0123456789abcdef01234567.wav");
+    const fresh = path.join(t.cfg.voiceDir, "76543210fedcba9876543210.wav");
+    writeFileSync(stale, "RIFF");
+    writeFileSync(fresh, "RIFF");
     const old = new Date(Date.now() - 60 * DAY);
-    utimesSync(clip, old, old);
-    await sweep(t.cfg, t.store, t.sites, () => undefined, () => true);
-    expect(readdirSync(t.cfg.voiceDir)).toHaveLength(1);
-    await sweep(t.cfg, t.store, t.sites, () => undefined, () => false);
-    expect(readdirSync(t.cfg.voiceDir)).toHaveLength(0);
+    utimesSync(stale, old, old);
+    await sweep(t.cfg, t.store, t.sites, () => undefined);
+    expect(readdirSync(t.cfg.voiceDir)).toEqual(["76543210fedcba9876543210.wav"]);
   });
 });

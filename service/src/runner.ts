@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { RenderJob, RenderResult } from "@banfimatei/video-kit/client";
@@ -6,6 +7,19 @@ import { signBody, signPath } from "./auth.js";
 import type { Config } from "./config.js";
 import { publicJob, RESTARTED, TERMINAL, type AbortReason, type JobStore, type StoredJob } from "./jobs.js";
 import { postJson, UnsafeTargetError } from "./net.js";
+import { BUILTIN } from "./sites.js";
+import { BUILTIN_TEMPLATES } from "./templates.js";
+
+/**
+ * The props a job renders with. Submit already cleaned them (props.ts); this
+ * repeats the cheap, idempotent part so a job stored by another version of
+ * the service can't skip it: no client voiceover, built-in props prepared.
+ */
+export function renderProps(job: StoredJob): Record<string, unknown> {
+  const { voiceover: _dropped, ...props } = job.props ?? {};
+  const template = job.site === BUILTIN ? BUILTIN_TEMPLATES[job.composition] : undefined;
+  return template ? template.prepare(props) : props;
+}
 
 export interface Runner {
   run(id: string, signal: AbortSignal): Promise<void>;
@@ -73,6 +87,7 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
           if (status >= 400 && status < 500 && status !== 408 && status !== 429) break;
         } catch (err) {
           log(`webhook ${id} failed: ${(err as Error).message}`);
+          // Refused for good (private host, bad scheme); a DNS or network failure gets the next attempt.
           if (err instanceof UnsafeTargetError) break;
         }
       }
@@ -120,11 +135,12 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
     let lastStage = "";
     let lastTick = 0;
     try {
+      if (!existsSync(job.serveDir)) throw new Error(`Site "${job.site}" was deleted before this render started.`);
       await mkdir(dir, { recursive: true });
       const result = await renderComposition({
         serveUrl: job.serveDir,
         compositionId: job.composition,
-        inputProps: job.props ?? {},
+        inputProps: renderProps(job),
         output: path.join(dir, still ? "still.png" : "video.mp4"),
         still: still ? { frame: job.frame ?? 0 } : undefined,
         poster: still || job.poster === false ? false : { frame: job.poster ?? 60 },

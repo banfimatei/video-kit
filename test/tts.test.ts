@@ -156,6 +156,19 @@ describe("voiceNarration", () => {
     expect(ok.s0?.durationInSeconds).toBeCloseTo(1, 2);
   });
 
+  it("replaces a bad clip already in the cache instead of failing on it forever", async () => {
+    const d = tmp();
+    let calls = 0;
+    const synthesizer = { voice: "fake", ext: "wav" as const, synthesize: async () => (calls++, silence(1)) };
+    const first = await voiceNarration({ s0: "Heal me." }, { provider: "espeak", dir: d, synthesizer });
+    const file = path.join(d, first.s0!.src.replace("voiceover/", ""));
+    writeFileSync(file, ""); // poisoned, e.g. by an older version
+    const again = await voiceNarration({ s0: "Heal me." }, { provider: "espeak", dir: d, synthesizer });
+    expect(calls).toBe(2);
+    expect(again.s0?.durationInSeconds).toBeCloseTo(1, 2);
+    expect(statSync(file).size).toBeGreaterThan(44);
+  });
+
   it.skipIf(!hasEspeak)("speaks a line that starts with a dash (espeak)", async () => {
     const d = tmp();
     const v = await voiceNarration({ s0: "-5% growth this quarter." }, { provider: "espeak", dir: d });

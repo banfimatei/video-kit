@@ -7,12 +7,14 @@
  *   video-kit sites
  *   video-kit site deploy <name> [--entry src/index.ts] [--public public] [--bundle dir] [--rspack]
  *   video-kit render <composition> [--site name] [--props file.json] [--tts provider]
- *                    [--still frame] [--out file.mp4] [--local [--entry src/index.ts] [--rspack]]
+ *                    [--still frame] [--out file.mp4]
+ *                    [--local [--entry src/index.ts | --bundle dir] [--public public] [--rspack]]
  *
  * Flags take `--name value` or `--name=value`. remotion.config.ts is not read:
  * if your bundle depends on it, run `npx remotion bundle` and pass --bundle build.
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { createVideoKitClient, type RenderJob } from "../client/index.js";
 import { renderComposition } from "./render.js";
 import { bundleSite, packSite } from "./site.js";
@@ -64,6 +66,10 @@ function progressLine(job: RenderJob) {
 async function main(): Promise<void> {
   parseArgs(process.argv.slice(2));
   const [cmd, sub, arg] = positional;
+  if (flag("help") === "true") {
+    usage();
+    return;
+  }
   if (cmd === "templates") {
     console.log(JSON.stringify(await client().templates(flag("site")), null, 2));
   } else if (cmd === "sites") {
@@ -84,9 +90,15 @@ async function main(): Promise<void> {
     const still = stillFrame();
     const out = flag("out") ?? (still !== undefined ? `${sub}.png` : `${sub}.mp4`);
     if (flag("local")) {
+      const bundleDir = flag("bundle");
       const result = await renderComposition({
-        entryPoint: flag("entry") ?? "src/index.ts",
-        publicDir: flag("public"),
+        ...(bundleDir
+          ? {
+              serveUrl: bundleDir,
+              // Remotion serves the bundle's public/ folder, so clips written there resolve with staticFile().
+              voice: { dir: path.join(bundleDir, "public", "voiceover"), toSrc: (file: string) => `voiceover/${file}` },
+            }
+          : { entryPoint: flag("entry") ?? "src/index.ts", publicDir: flag("public") }),
         compositionId: sub,
         inputProps: props,
         output: out,
@@ -107,12 +119,16 @@ async function main(): Promise<void> {
     console.error(`\nWrote ${out} (${job.result?.durationInSeconds.toFixed(1)}s, voice: ${job.result?.voice ?? "none"})`);
     console.log(JSON.stringify(job.result, null, 2));
   } else {
-    const doc = readFileSync(new URL(import.meta.url), "utf8").split("\n");
-    const start = doc.findIndex((l) => l.startsWith("/**"));
-    const end = doc.findIndex((l, i) => i > start && l.trim() === "*/");
-    console.error(doc.slice(start + 1, end).join("\n").replace(/^ \* ?/gm, "").trim());
+    usage();
     process.exitCode = 2;
   }
+}
+
+function usage(): void {
+  const doc = readFileSync(new URL(import.meta.url), "utf8").split("\n");
+  const start = doc.findIndex((l) => l.startsWith("/**"));
+  const end = doc.findIndex((l, i) => i > start && l.trim() === "*/");
+  console.error(doc.slice(start + 1, end).join("\n").replace(/^ \* ?/gm, "").trim());
 }
 
 main().catch((err) => {
