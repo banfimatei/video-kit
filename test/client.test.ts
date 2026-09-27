@@ -1,5 +1,12 @@
+import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { createVideoKitClient, VideoKitError, type RenderJob } from "../src/client/index.js";
+import {
+  createVideoKitClient,
+  verifyWebhook,
+  VideoKitError,
+  webhookSecretFromApiKey,
+  type RenderJob,
+} from "../src/client/index.js";
 
 function fakeServer(jobs: RenderJob[]) {
   const calls: Array<{ method: string; url: string; headers: Record<string, string>; body: unknown }> = [];
@@ -53,5 +60,38 @@ describe("video-kit client", () => {
     const put = calls.find((c) => c.method === "PUT")!;
     expect(put.headers["Content-Type"]).toBe("application/gzip");
     expect(put.body).toBeInstanceOf(Uint8Array);
+  });
+});
+
+describe("errors", () => {
+  it("puts the server's validation details in the message", async () => {
+    const fetchImpl = (async () =>
+      Response.json(
+        { error: "Invalid props", details: [{ path: "props.scenes.0.title", message: "Required" }] },
+        { status: 400 },
+      )) as unknown as typeof fetch;
+    const kit = createVideoKitClient({ baseUrl: "http://x", apiKey: "k", fetch: fetchImpl });
+    await expect(kit.render({ composition: "Story" })).rejects.toThrow(
+      "POST /v1/renders → 400: Invalid props (props.scenes.0.title: Required)",
+    );
+  });
+});
+
+describe("verifyWebhook", () => {
+  const body = JSON.stringify({ id: "j1", status: "done" });
+  const sign = (secret: string, b = body) => `sha256=${createHmac("sha256", secret).update(b).digest("hex")}`;
+
+  it("derives the service's default webhook secret from the API key", async () => {
+    const expected = createHmac("sha256", "api-key-0123456789").update("video-kit:webhook").digest("hex");
+    expect(await webhookSecretFromApiKey("api-key-0123456789")).toBe(expected);
+    expect(await verifyWebhook(body, sign(expected), { apiKey: "api-key-0123456789" })).toBe(true);
+  });
+
+  it("accepts an explicit secret and rejects tampering, other keys and junk", async () => {
+    expect(await verifyWebhook(body, sign("whsec-0123456789abcdef"), { secret: "whsec-0123456789abcdef" })).toBe(true);
+    expect(await verifyWebhook(body + " ", sign("whsec-0123456789abcdef"), { secret: "whsec-0123456789abcdef" })).toBe(false);
+    expect(await verifyWebhook(body, sign("other-secret-0123456"), { secret: "whsec-0123456789abcdef" })).toBe(false);
+    expect(await verifyWebhook(body, "sha256=nothex", { secret: "whsec-0123456789abcdef" })).toBe(false);
+    expect(await verifyWebhook(body, undefined, { secret: "whsec-0123456789abcdef" })).toBe(false);
   });
 });

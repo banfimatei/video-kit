@@ -20,9 +20,22 @@ export function signPath(secret: string, filePath: string, ttlSeconds: number, n
   return { exp, query: `exp=${exp}&sig=${sign(secret, `${filePath}|${exp}`)}` };
 }
 
-export function verifySignedPath(secret: string, filePath: string, exp: string | undefined, sig: string | undefined, now = Date.now()): boolean {
+/**
+ * True for a valid, unexpired signature. `maxTtlSeconds` refuses links that
+ * expire further out than the service ever issues, so a leaked key can't
+ * mint links that last forever.
+ */
+export function verifySignedPath(
+  secret: string,
+  filePath: string,
+  exp: string | undefined,
+  sig: string | undefined,
+  { now = Date.now(), maxTtlSeconds }: { now?: number; maxTtlSeconds?: number } = {},
+): boolean {
   if (!exp || !sig || !/^\d{1,12}$/.test(exp)) return false;
-  if (Number(exp) * 1000 < now) return false;
+  const expMs = Number(exp) * 1000;
+  if (expMs < now) return false;
+  if (maxTtlSeconds !== undefined && expMs > now + maxTtlSeconds * 1000) return false;
   return safeEqual(sign(secret, `${filePath}|${exp}`), sig);
 }
 

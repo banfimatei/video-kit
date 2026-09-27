@@ -4,17 +4,20 @@
  */
 export {
   fitScenesToVoice,
+  own,
   type FitOptions,
   type SceneSpec,
   type SceneTimeline,
 } from "./timing/fitScenesToVoice.js";
 export {
   audioPropsSchema,
+  HOUSE_SOUNDS,
   narrationSchema,
   sfxCueSchema,
   voiceClipSchema,
   voiceoverSchema,
   type AudioProps,
+  type HouseSound,
   type Narration,
   type SfxCue,
   type VoiceClip,

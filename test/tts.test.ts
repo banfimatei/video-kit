@@ -1,9 +1,11 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { audioDuration, createSynthesizer, pcmToWav, pickTtsProvider, voiceNarration } from "../src/node/tts.js";
 
+const hasEspeak = spawnSync("espeak-ng", ["--version"]).status === 0;
 const dirs: string[] = [];
 const tmp = () => {
   const d = mkdtempSync(path.join(os.tmpdir(), "vk-tts-"));
@@ -66,6 +68,98 @@ describe("voiceNarration", () => {
     const again = await voiceNarration(narration, { provider: "espeak", dir: d, synthesizer });
     expect(calls).toBe(2);
     expect(again.opener?.src).toMatch(/^voiceover\//);
+  });
+
+  it("shares one request when two renders voice the same line at once, and leaves no temp files", async () => {
+    const d = tmp();
+    let calls = 0;
+    const synthesizer = {
+      voice: "fake",
+      ext: "wav" as const,
+      synthesize: async () => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 30));
+        return silence(1);
+      },
+    };
+    const [a, b] = await Promise.all([
+      voiceNarration({ s0: "Same line." }, { provider: "espeak", dir: d, synthesizer }),
+      voiceNarration({ x: "Same line." }, { provider: "espeak", dir: d, synthesizer }),
+    ]);
+    expect(calls).toBe(1);
+    expect(a.s0?.src).toBe(b.x?.src);
+    expect(readdirSync(d).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("retries a line itself when the shared request failed (say, the other render was canceled)", async () => {
+    const d = tmp();
+    let calls = 0;
+    const synthesizer = {
+      voice: "fake",
+      ext: "wav" as const,
+      synthesize: async () => {
+        calls++;
+        await new Promise((r) => setTimeout(r, 20));
+        if (calls === 1) throw new Error("canceled");
+        return silence(1);
+      },
+    };
+    const results = await Promise.allSettled([
+      voiceNarration({ s0: "Line." }, { provider: "espeak", dir: d, synthesizer }),
+      voiceNarration({ s0: "Line." }, { provider: "espeak", dir: d, synthesizer }),
+    ]);
+    // Whichever call made the failing request fails; the other retries by itself and succeeds.
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(calls).toBe(2);
+  });
+
+  it("touches cached clips on use, so an age-based sweep keeps the ones still in use", async () => {
+    const d = tmp();
+    const synthesizer = { voice: "fake", ext: "wav" as const, synthesize: async () => silence(1) };
+    const v = await voiceNarration({ s0: "Keep me." }, { provider: "espeak", dir: d, synthesizer });
+    const file = path.join(d, v.s0!.src.replace("voiceover/", ""));
+    const old = new Date(Date.now() - 40 * 86_400_000);
+    utimesSync(file, old, old);
+    await voiceNarration({ s0: "Keep me." }, { provider: "espeak", dir: d, synthesizer });
+    expect(Date.now() - statSync(file).mtimeMs).toBeLessThan(60_000);
+  });
+
+  it("stops between clips and hands the signal to the provider", async () => {
+    const d = tmp();
+    const ctl = new AbortController();
+    const seen: Array<AbortSignal | undefined> = [];
+    const synthesizer = {
+      voice: "fake",
+      ext: "wav" as const,
+      synthesize: async (_text: string, signal?: AbortSignal) => {
+        seen.push(signal);
+        ctl.abort();
+        return silence(1);
+      },
+    };
+    await expect(
+      voiceNarration({ a: "One.", b: "Two." }, { provider: "espeak", dir: d, synthesizer, signal: ctl.signal }),
+    ).rejects.toThrow(/abort/i);
+    expect(seen).toEqual([ctl.signal]);
+  });
+
+  it("never caches an empty or unplayable clip", async () => {
+    const d = tmp();
+    const bad = (audio: Buffer) => ({ voice: "fake", ext: "wav" as const, synthesize: async () => audio });
+    await expect(voiceNarration({ s0: "Empty." }, { provider: "espeak", dir: d, synthesizer: bad(Buffer.alloc(0)) })).rejects.toThrow(/no audio/);
+    await expect(
+      voiceNarration({ s0: "Junk." }, { provider: "espeak", dir: d, synthesizer: bad(Buffer.from("<html>rate limited</html>")) }),
+    ).rejects.toThrow(/playable/);
+    expect(readdirSync(d)).toEqual([]);
+    // A later good response for the same line is cached normally.
+    const ok = await voiceNarration({ s0: "Junk." }, { provider: "espeak", dir: d, synthesizer: bad(silence(1)) });
+    expect(ok.s0?.durationInSeconds).toBeCloseTo(1, 2);
+  });
+
+  it.skipIf(!hasEspeak)("speaks a line that starts with a dash (espeak)", async () => {
+    const d = tmp();
+    const v = await voiceNarration({ s0: "-5% growth this quarter." }, { provider: "espeak", dir: d });
+    expect(v.s0!.durationInSeconds).toBeGreaterThan(0.5);
   });
 
   it("builds provider requests with the right auth and fails loudly on errors", async () => {

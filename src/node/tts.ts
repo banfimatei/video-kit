@@ -13,10 +13,10 @@
  * Files are named by a hash of provider, voice and text, so voicing the same
  * line again is free.
  */
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
@@ -48,7 +48,7 @@ export interface Synthesizer {
   /** Everything besides the text that changes the audio; part of the cache key. */
   voice: string;
   ext: "mp3" | "wav";
-  synthesize(text: string): Promise<Buffer>;
+  synthesize(text: string, signal?: AbortSignal): Promise<Buffer>;
 }
 
 function required(env: Env, name: string): string {
@@ -57,8 +57,15 @@ function required(env: Env, name: string): string {
   return v;
 }
 
-async function post(fetchImpl: typeof fetch, url: string, init: RequestInit, label: string): Promise<Response> {
-  const res = await fetchImpl(url, { ...init, signal: init.signal ?? AbortSignal.timeout(120_000) });
+async function post(
+  fetchImpl: typeof fetch,
+  url: string,
+  init: RequestInit,
+  label: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const timeout = AbortSignal.timeout(120_000);
+  const res = await fetchImpl(url, { ...init, signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     throw new Error(`${label} TTS ${res.status}: ${body.slice(0, 300)}`);
@@ -97,7 +104,7 @@ export function createSynthesizer(
       return {
         voice: `${voiceId}/${model}`,
         ext: "mp3",
-        synthesize: async (text) => {
+        synthesize: async (text, signal) => {
           const res = await post(
             fetchImpl,
             `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(voiceId)}`,
@@ -111,6 +118,7 @@ export function createSynthesizer(
               }),
             },
             "ElevenLabs",
+            signal,
           );
           return Buffer.from(await res.arrayBuffer());
         },
@@ -124,7 +132,7 @@ export function createSynthesizer(
       return {
         voice: `${model}/${voice}/${instructions}`,
         ext: "mp3",
-        synthesize: async (text) => {
+        synthesize: async (text, signal) => {
           const res = await post(
             fetchImpl,
             "https://api.openai.com/v1/audio/speech",
@@ -134,6 +142,7 @@ export function createSynthesizer(
               body: JSON.stringify({ model, voice, input: text, response_format: "mp3", instructions }),
             },
             "OpenAI",
+            signal,
           );
           return Buffer.from(await res.arrayBuffer());
         },
@@ -146,7 +155,7 @@ export function createSynthesizer(
       return {
         voice: `${model}/${voice}`,
         ext: "wav",
-        synthesize: async (text) => {
+        synthesize: async (text, signal) => {
           const res = await post(
             fetchImpl,
             `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`,
@@ -162,6 +171,7 @@ export function createSynthesizer(
               }),
             },
             "Gemini",
+            signal,
           );
           const json = (await res.json()) as {
             candidates?: Array<{ content?: { parts?: Array<{ inlineData?: { data?: string; mimeType?: string } }> } }>;
@@ -179,14 +189,17 @@ export function createSynthesizer(
       return {
         voice: `${voice}/${speed}`,
         ext: "wav",
-        synthesize: async (text) => {
+        synthesize: async (text, signal) => {
           try {
-            const { stdout } = await execFileAsync("espeak-ng", ["-v", voice, "-s", speed, "--stdout", text], {
+            // `--` so a line starting with "-" (say "-5% this quarter") is text, not an option.
+            const { stdout } = await execFileAsync("espeak-ng", ["-v", voice, "-s", speed, "--stdout", "--", text], {
               encoding: "buffer",
               maxBuffer: 64 * 1024 * 1024,
+              signal,
             });
             return stdout;
           } catch (err) {
+            if (signal?.aborted) throw err;
             throw new Error(`espeak-ng failed (is it installed?): ${(err as Error).message}`);
           }
         },
@@ -218,6 +231,57 @@ export interface VoiceNarrationOptions {
   fetchImpl?: typeof fetch;
   /** Inject a synthesizer (tests); overrides provider. */
   synthesizer?: Synthesizer;
+  /** Stop between clips and cancel the one in flight. */
+  signal?: AbortSignal;
+}
+
+/**
+ * Clips being written right now, by path: two renders voicing the same line
+ * at once share one request instead of racing on the same file.
+ */
+const inFlight = new Map<string, Promise<void>>();
+
+/**
+ * Make sure `file` holds a good clip: reuse it, share another caller's
+ * request for it, or synthesize it. A new clip is measured before it enters
+ * the cache, so an empty or non-audio response is an error now rather than
+ * a poisoned cache entry every later render trips over.
+ */
+async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Promise<void> {
+  if (existsSync(file)) {
+    // Touch on use, so a cache sweep by age keeps clips that are still being rendered.
+    const now = new Date();
+    await utimes(file, now, now).catch(() => undefined);
+    return;
+  }
+  const pending = inFlight.get(file);
+  if (pending) {
+    // Share the other render's request; if it failed (say it was canceled), try ourselves.
+    const ok = await pending.then(() => true, () => false);
+    if (ok || existsSync(file)) return;
+    if (inFlight.has(file)) return ensureClip(file, synthesize);
+  }
+  const write = (async () => {
+    const audio = await synthesize();
+    if (!audio.length) throw new Error("The TTS provider returned no audio.");
+    // Write, check, then rename, so the cache only ever holds whole, playable clips.
+    const tmp = `${file}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, audio);
+      const seconds = await audioDuration(tmp).catch(() => NaN);
+      if (!(seconds > 0)) throw new Error("The TTS provider returned something that isn't playable audio.");
+      await rename(tmp, file);
+    } catch (err) {
+      await rm(tmp, { force: true }).catch(() => undefined);
+      throw err;
+    }
+  })();
+  inFlight.set(file, write);
+  try {
+    await write;
+  } finally {
+    inFlight.delete(file);
+  }
 }
 
 /** Voice every non-empty line of `narration`; lines already on disk are reused. Keys are kept. */
@@ -228,6 +292,7 @@ export async function voiceNarration(narration: Narration, opts: VoiceNarrationO
 
   const out: Voiceover = {};
   for (const [scene, text] of Object.entries(narration)) {
+    opts.signal?.throwIfAborted();
     const clean = text?.replace(/\s+/g, " ").trim();
     if (!clean) {
       out[scene] = null;
@@ -236,13 +301,7 @@ export async function voiceNarration(narration: Narration, opts: VoiceNarrationO
     const hash = createHash("sha256").update(`${opts.provider}\n${tts.voice}\n${clean}`).digest("hex").slice(0, 24);
     const name = `${hash}.${tts.ext}`;
     const file = path.join(opts.dir, name);
-    if (!existsSync(file)) {
-      const audio = await tts.synthesize(clean);
-      // Write then rename, so a crash never leaves a truncated clip in the cache.
-      const tmp = `${file}.${process.pid}.tmp`;
-      await writeFile(tmp, audio);
-      await rename(tmp, file);
-    }
+    await ensureClip(file, () => tts.synthesize(clean, opts.signal));
     const clip: VoiceClip = { src: toSrc(name), durationInSeconds: await audioDuration(file) };
     out[scene] = clip;
   }

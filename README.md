@@ -53,7 +53,12 @@ const job = await kit.renderAndWait({ composition: "Story", props: { scenes: [{ 
 const mp4 = await kit.download(job); // Uint8Array
 ```
 
-Or the CLI: `npx video-kit render Story --props=props.json --out=story.mp4`.
+Or the CLI, once the library is installed (`npm install github:banfimatei/video-kit`):
+`npx video-kit render Story --props props.json --out story.mp4`. Without
+installing: `npx -p github:banfimatei/video-kit video-kit render …`.
+
+The client only needs `fetch`: Remotion, React and zod are optional peers, so
+a project that only calls the service installs none of them.
 
 ### API
 
@@ -61,24 +66,42 @@ All `/v1` routes need `Authorization: Bearer <RENDER_API_KEY>`.
 
 | Method and path | What it does |
 | --- | --- |
-| `GET /healthz` | Liveness, version and queue size (no auth). |
+| `GET /healthz` | Liveness, version and queue size (no auth). `503` while the service drains for a restart. |
 | `GET /v1/templates[?site=name]` | Compositions you can render, with sizes, default props and (for built-ins) the JSON Schema of their props. |
-| `POST /v1/renders` | Queue a render. Body: `composition`, `props`, and optionally `site` (default `builtin`), `tts`, `kind` (`video` or `still`), `frame`, `poster` (frame or `false`), `webhookUrl`. Returns `202` and the job. |
-| `GET /v1/renders/:id` | The job: `status` (`queued`, `running`, `done`, `failed`, `canceled`), `stage`, `progress`, `position` while queued, `error`, and when done `result` with signed `videoUrl` / `posterUrl` / `stillUrl`. Every read signs fresh links. |
+| `POST /v1/renders` | Queue a render. Body: `composition`, `props`, and optionally `site` (default `builtin`), `tts`, `kind` (`video` or `still`), `frame`, `poster` (frame or `false`), `webhookUrl`. Returns `202` and the job; `400` with the bad fields for invalid input, `429` when the queue is full, `503` while restarting. |
+| `GET /v1/renders/:id` | The job: `status` (`queued`, `running`, `done`, `failed`, `canceled`), `stage`, `progress`, `position` while queued, `error`, and when done `result` with signed `videoUrl` / `posterUrl` / `stillUrl` and `expiresAt`. Every read signs fresh links, valid until `URL_TTL_HOURS` from now or the render's deletion, whichever is first. |
 | `GET /v1/renders` | The 50 most recent jobs. |
-| `DELETE /v1/renders/:id` | Cancel a queued or running render; on a finished one, delete it and its files. |
+| `DELETE /v1/renders/:id` | Cancel a queued or running render (at any stage: voicing, rendering, poster); on a finished one, delete it and its files. |
 | `GET /v1/sites` | Uploaded sites. |
 | `PUT /v1/sites/:name` | Upload a site: a gzipped tarball of a `remotion bundle` directory. Replaces the previous version; renders in flight keep theirs. |
-| `DELETE /v1/sites/:name` | Remove a site. |
-| `GET /files/:id/<file>` | A render's `video.mp4`, `video.poster.png` or `still.png`, by signed link (or bearer key). Supports `Range`. |
+| `DELETE /v1/sites/:name` | Remove a site; `409` while renders of it are queued or running. |
+| `GET /files/:id/<file>` | A render's `video.mp4`, `video.poster.png` or `still.png`, by signed link (or bearer key). Supports `Range` and `HEAD`. |
 
-Webhooks: with `webhookUrl`, the finished job is POSTed as JSON with
-`X-Video-Kit-Signature: sha256=<hex HMAC of the body>`, signed with the
-service's signing secret (retried 3 times).
+Webhooks: with `webhookUrl`, the job is POSTed as JSON once it is `done`,
+`failed` or `canceled` (including a cancel while queued), with
+`X-Video-Kit-Signature: sha256=<hex HMAC-SHA256 of the raw body>` and
+`X-Video-Kit-Job: <id>`. Delivery is at least once: up to 3 attempts (now,
++5s, +30s; a 4xx other than 408/429 stops early), redirects are not followed,
+and a delivery still owed when the service restarts is sent after it. Dedupe
+by job id. The URL must be http(s) on a public host (loopback, private,
+link-local and `*.internal` are refused; `ALLOW_PRIVATE_URLS=1` lifts that).
+Verify with the client:
 
-Limits (environment variables): `MAX_QUEUE` (25), `MAX_RENDER_SECONDS` (180),
+```ts
+import { verifyWebhook } from "@banfimatei/video-kit/client";
+const ok = await verifyWebhook(rawBody, req.headers["x-video-kit-signature"], { apiKey: process.env.VIDEO_KIT_API_KEY! });
+// or { secret: WEBHOOK_SECRET } if the service sets one
+```
+
+The webhook key is `WEBHOOK_SECRET`, or else HMAC-SHA256(`RENDER_API_KEY`,
+`"video-kit:webhook"`). It is separate from the key that signs file links, so
+a receiver can't mint download links.
+
+Limits (environment variables, defaults in brackets): `MAX_QUEUE` (25),
+`MAX_RENDER_SECONDS` (180, the video's length), `JOB_TIMEOUT_MINUTES` (45),
+`MAX_NARRATION_CHARS` (12000) and `MAX_NARRATION_LINES` (40) per render,
 `MAX_SITE_MB` (300), `MAX_BODY_KB` (1024). Finished renders are deleted after
-`RETENTION_DAYS` (7); links last `URL_TTL_HOURS` (168) at most.
+`RETENTION_DAYS` (7). Everything else: [`service/.env.example`](service/.env.example).
 
 ### Built-in template: Story
 
@@ -93,9 +116,14 @@ each scene stretched to fit its line; quiet house sound design. Full schema:
 | `theme` | `background`, `foreground`, `muted`, `accent` colors; headline `font`: `sans`, `serif`, `mono` |
 | `brand` | `name` (top left), `url` (bottom right) |
 | `footer` | A line on every frame, never animated: a disclaimer or credit |
-| `scenes[]` | `title` (required), `kicker`, `body`, `image` (https), `narration`, `seconds` (minimum), `id` |
+| `scenes[]` | `title` (required), `kicker`, `body`, `image` (https, public host), `narration`, `seconds` (minimum), `id` (unique; default `s0`, `s1`, …) |
+| `narration` | Voice lines by scene id, overriding the scenes' own; keys that aren't scene ids are dropped |
 | `soundDesign` | `house` (default) or `none` |
-| `sfx[]` | Extra sounds: `{ sound, at, scene?, volume?, playbackRate? }` |
+| `sfx[]` | Extra sounds: `{ sound, at, scene?, volume?, playbackRate? }`, where `sound` is a house cue, `remotion:<name>` from [@remotion/sfx](https://www.remotion.dev/docs/sfx), or an https URL |
+
+Type is sized to fit: the longest title and body the schema allows still sit
+clear of the brand and footer at every aspect. A request whose scenes alone
+run past `MAX_RENDER_SECONDS` is a `400` before any voice is paid for.
 
 ### Your own compositions: sites
 
@@ -114,7 +142,13 @@ Without the CLI, upload the output of `npx remotion bundle` yourself:
 The service voices a site's `props.narration` (an object of scene id → text)
 into `props.voiceover` (scene id → `{ src, durationInSeconds }`) before it
 renders, so a composition gets a voice by reading those two props, which is
-what the library below is for.
+what the library below is for. The service owns `voiceover`: one sent by a
+client is dropped.
+
+`site deploy` bundles with Remotion's bundler API, which doesn't read
+`remotion.config.ts`. If your bundle depends on it (Tailwind, a webpack
+override), run `npx remotion bundle` and deploy that with `--bundle build`.
+`--rspack` bundles with Rspack instead of webpack (faster).
 
 ## Use the library in a Remotion project
 
@@ -159,7 +193,8 @@ await renderComposition({
 ```
 
 `@banfimatei/video-kit/core` has the schemas and timing without any browser
-assets, for validating props in Node.
+assets, for validating props in Node. Scene ids must be unique
+(`fitScenesToVoice` throws otherwise).
 
 ### Voice providers
 
@@ -175,18 +210,31 @@ same script costs nothing.
 
 ## Deploying the service (Railway)
 
-The repo deploys as one Railway service from the root `Dockerfile`
-(`railway.json` sets the health check). It needs:
+The repo deploys as one Railway service built from the root `Dockerfile`
+(Railway picks it up on its own). Railway no longer reads `railway.json` for
+new services, so these are service settings:
 
-- a **volume** mounted at `/data` (renders, sites, voice cache, job records);
-- `RENDER_API_KEY` (32+ random characters);
-- a TTS key if you want voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY` or
-  `GEMINI_API_KEY`);
-- a public domain. `RAILWAY_PUBLIC_DOMAIN` is used for links automatically.
+| Setting | Value |
+| --- | --- |
+| Volume | mounted at `/data` (renders, sites, voice cache, job records) |
+| Healthcheck | path `/healthz`, timeout 300s (boot starts a Chrome to list the built-in templates) |
+| Restart policy | on failure, 5 retries |
+| Draining | variable `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300`: how long running renders get to finish on a redeploy |
+| Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile` (docs-only commits don't restart it) |
+| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) |
+| Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 
 Everything else has defaults: see [`service/.env.example`](service/.env.example).
 One render runs at a time (`RENDER_CONCURRENCY`); each is a headless Chrome,
 so give the service 2+ GB of RAM per concurrent render.
+
+On a redeploy (a volume means Railway stops the old container before starting
+the new one), the service stops taking new work (`503`), lets running renders
+finish within the draining window, and fails only what is still running at
+its end, with "The service restarted…" and a webhook. Renders still waiting
+stay queued and run after the restart. The image runs node under
+`dumb-init`, which reaps Chrome's processes and turns the stop signal into the
+service's "drain" signal (Remotion kills its browsers on a plain SIGTERM).
 
 ## Local development
 
@@ -196,7 +244,7 @@ npm test                          # library + service tests
 cd service
 npm run bundle                    # built-in templates → service/bundle
 npm run studio                    # preview the built-in templates
-RENDER_API_KEY=dev-key-0123456789ab npm run dev
+RENDER_API_KEY=dev-key-0123456789ab npm run dev   # or put it in service/.env
 VIDEO_KIT_URL=http://localhost:8080 VIDEO_KIT_API_KEY=dev-key-0123456789ab SMOKE_TTS=espeak npm run smoke
 ```
 

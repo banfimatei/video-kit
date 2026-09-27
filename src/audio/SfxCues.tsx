@@ -1,5 +1,6 @@
 import { useVideoConfig } from "remotion";
 import type { SfxCue } from "../schema.js";
+import { own } from "../timing/fitScenesToVoice.js";
 import { Sfx } from "./Sfx.js";
 
 /**
@@ -19,7 +20,7 @@ export const SfxCues: React.FC<{
   return (
     <>
       {cues.map((cue, i) => {
-        const base = cue.scene === undefined ? 0 : starts[cue.scene];
+        const base = cue.scene === undefined ? 0 : own(starts, cue.scene);
         if (base === null || base === undefined) return null;
         return (
           <Sfx

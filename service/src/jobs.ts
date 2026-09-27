@@ -5,7 +5,8 @@ import type { RenderJob, RenderKind, RenderRequest } from "@banfimatei/video-kit
 
 /** What the service keeps per job: the public job plus what it needs to run it. */
 export interface StoredJob extends RenderJob {
-  props: Record<string, unknown>;
+  /** Dropped once the job is terminal: nothing reads them after the render, and they can be large. */
+  props?: Record<string, unknown>;
   tts?: string;
   frame?: number;
   poster?: number | false;
@@ -16,9 +17,13 @@ export interface StoredJob extends RenderJob {
   publicBase: string;
   /** Files written for this job, relative to its render dir. */
   files?: { video?: string; poster?: string; still?: string };
+  /** A terminal job whose webhook hasn't been delivered yet (survives restarts). */
+  webhookPending?: boolean;
 }
 
 export const TERMINAL = new Set(["done", "failed", "canceled"]);
+
+export const RESTARTED = "The service restarted before this render finished. Submit it again.";
 
 export class JobStore {
   private jobs = new Map<string, StoredJob>();
@@ -26,27 +31,38 @@ export class JobStore {
 
   constructor(private dir: string) {}
 
-  /** Load every job; any that were queued or running when the process died are marked failed. */
-  async init(): Promise<number> {
+  /**
+   * Load every job. Renders that were running when the process stopped are
+   * marked failed (they can't resume); renders still waiting never started,
+   * so they are returned, oldest first, to be queued again.
+   */
+  async init(): Promise<{ interrupted: number; queued: string[] }> {
     await mkdir(this.dir, { recursive: true });
     let interrupted = 0;
+    const queued: StoredJob[] = [];
     for (const name of await readdir(this.dir)) {
       if (!name.endsWith(".json")) continue;
       try {
         const job = JSON.parse(await readFile(path.join(this.dir, name), "utf8")) as StoredJob;
-        if (!TERMINAL.has(job.status)) {
-          job.status = "failed";
-          job.error = "The service restarted before this render finished. Submit it again.";
-          job.finishedAt = new Date().toISOString();
+        if (typeof job.id !== "string" || `${job.id}.json` !== name) continue;
+        // In the map first: persist() skips jobs it doesn't know.
+        this.jobs.set(job.id, job);
+        if (job.status === "queued") {
+          queued.push(job);
+        } else if (!TERMINAL.has(job.status)) {
           interrupted++;
+          this.update(job.id, { status: "failed", stage: undefined, error: RESTARTED, finishedAt: new Date().toISOString() }, false);
+          await this.persist(job);
+        } else if (job.props) {
+          delete job.props;
           await this.persist(job);
         }
-        this.jobs.set(job.id, job);
       } catch {
         // A torn or foreign file: ignore it rather than refuse to boot.
       }
     }
-    return interrupted;
+    queued.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return { interrupted, queued: queued.map((j) => j.id) };
   }
 
   create(req: RenderRequest & { site: string; kind: RenderKind }, extra: Pick<StoredJob, "serveDir" | "publicBase">): StoredJob {
@@ -82,13 +98,27 @@ export class JobStore {
     return [...this.jobs.values()];
   }
 
-  /** Apply a change and persist it. Progress ticks are frequent; persist is serialized per job. */
+  /**
+   * Apply a change and persist it. Progress ticks are frequent; persist is
+   * serialized per job. Reaching a terminal status drops the props and, if
+   * the job has a webhook, marks it pending until delivered.
+   */
   update(id: string, change: Partial<StoredJob>, persist = true): StoredJob | undefined {
     const job = this.jobs.get(id);
     if (!job) return undefined;
+    const wasTerminal = TERMINAL.has(job.status);
     Object.assign(job, change);
+    if (!wasTerminal && TERMINAL.has(job.status)) {
+      delete job.props;
+      if (job.webhookUrl) job.webhookPending = true;
+    }
     if (persist) void this.persist(job);
     return job;
+  }
+
+  /** Resolves once every write started so far has landed (for shutdown). */
+  async flush(): Promise<void> {
+    await Promise.all([...this.writes.values()]);
   }
 
   async remove(id: string): Promise<void> {
@@ -127,22 +157,39 @@ export class JobStore {
 
 /** Public view of a job: no props, no internal paths. */
 export function publicJob(job: StoredJob, position?: number): RenderJob {
-  const { props: _p, tts: _t, frame: _f, poster: _po, webhookUrl: _w, serveDir: _s, publicBase: _b, files: _fi, ...rest } = job;
+  const {
+    props: _p,
+    tts: _t,
+    frame: _f,
+    poster: _po,
+    webhookUrl: _w,
+    webhookPending: _wp,
+    serveDir: _s,
+    publicBase: _b,
+    files: _fi,
+    ...rest
+  } = job;
   return position === undefined ? rest : { ...rest, position };
 }
 
+/** Why a running render was aborted; the runner records a different outcome for each. */
+export type AbortReason = "canceled" | "shutdown";
+
 /**
  * FIFO queue with a fixed number of workers. `run` does the work for one job;
- * `cancel` drops a queued job or aborts a running one.
+ * `cancel` drops a queued job or aborts a running one. `onCrash` hears about
+ * a `run` that rejected (it shouldn't), so the job can still be closed out.
  */
 export class RenderQueue {
   private waiting: string[] = [];
   private running = new Map<string, AbortController>();
+  private paused = false;
 
   constructor(
     private concurrency: number,
     private maxQueued: number,
     private run: (id: string, signal: AbortSignal) => Promise<void>,
+    private onCrash: (id: string, err: unknown) => void = () => undefined,
   ) {}
 
   get size() {
@@ -163,39 +210,50 @@ export class RenderQueue {
     this.pump();
   }
 
-  /** True if the job was queued or running here. */
-  cancel(id: string): boolean {
+  /** Where the job was: dropped from the queue, aborted while running, or not here at all. */
+  cancel(id: string): "queued" | "running" | null {
     const i = this.waiting.indexOf(id);
     if (i !== -1) {
       this.waiting.splice(i, 1);
-      return true;
+      return "queued";
     }
     const ctl = this.running.get(id);
     if (ctl) {
-      ctl.abort();
-      return true;
+      ctl.abort("canceled" satisfies AbortReason);
+      return "running";
     }
-    return false;
+    return null;
   }
 
-  abortAll(): void {
-    this.waiting = [];
-    for (const ctl of this.running.values()) ctl.abort();
+  /** Start nothing new (shutdown); waiting jobs stay queued, on disk too. */
+  pause(): void {
+    this.paused = true;
   }
 
-  /** Resolves once nothing is running (after abortAll, for shutdown). */
+  /** Abort every running render. */
+  abortRunning(reason: AbortReason): void {
+    for (const ctl of this.running.values()) ctl.abort(reason);
+  }
+
+  /** Resolves once nothing is running, or after `timeoutMs` (for shutdown). */
   async drain(timeoutMs: number): Promise<void> {
     const deadline = Date.now() + timeoutMs;
     while (this.running.size && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
   }
 
   private pump(): void {
-    while (this.running.size < this.concurrency && this.waiting.length) {
+    while (!this.paused && this.running.size < this.concurrency && this.waiting.length) {
       const id = this.waiting.shift()!;
       const ctl = new AbortController();
       this.running.set(id, ctl);
       this.run(id, ctl.signal)
-        .catch(() => undefined)
+        .catch((err: unknown) => {
+          try {
+            this.onCrash(id, err);
+          } catch {
+            // never let bookkeeping take the worker down
+          }
+        })
         .finally(() => {
           this.running.delete(id);
           this.pump();

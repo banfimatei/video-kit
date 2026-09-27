@@ -19,6 +19,10 @@ export type Narration = z.infer<typeof narrationSchema>;
 export const voiceoverSchema = z.record(z.string(), voiceClipSchema.nullable());
 export type Voiceover = z.infer<typeof voiceoverSchema>;
 
+/** The house cues shipped in assets/sfx (see resolveSound). */
+export const HOUSE_SOUNDS = ["tick", "whoosh", "thud", "chime", "riser", "page"] as const;
+export type HouseSound = (typeof HOUSE_SOUNDS)[number];
+
 /**
  * A sound placed on the timeline. `sound` is anything resolveSound() takes:
  * a house cue ("tick", "whoosh", "thud", "chime", "riser", "page"), an
@@ -39,7 +43,7 @@ export type SfxCue = z.infer<typeof sfxCueSchema>;
  * into its own schema to get narration, voiceover, soundDesign and sfx.
  */
 export const audioPropsSchema = z.object({
-  narration: narrationSchema.optional(),
+  narration: narrationSchema.nullable().optional(),
   voiceover: voiceoverSchema.nullable().optional(),
   /** "house" lays the composition's built-in cues; "none" leaves voice and `sfx` only. */
   soundDesign: z.enum(["house", "none"]).optional(),

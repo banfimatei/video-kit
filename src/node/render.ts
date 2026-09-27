@@ -6,6 +6,7 @@
  */
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import type { WebpackOverrideFn } from "@remotion/bundler";
 import type { Narration, Voiceover } from "../schema.js";
 import { pickTtsProvider, voiceNarration, type TtsProvider } from "./tts.js";
 
@@ -19,6 +20,10 @@ export interface RenderCompositionOptions {
   entryPoint?: string;
   /** Public dir to bundle with `entryPoint`; voice clips land in `<publicDir>/voiceover`. Default ./public. */
   publicDir?: string;
+  /** With `entryPoint`: what remotion.config.ts's overrideWebpackConfig would do (the config file isn't read). */
+  webpackOverride?: WebpackOverrideFn;
+  /** With `entryPoint`: bundle with Rspack instead of webpack. */
+  rspack?: boolean;
   /** An already-bundled site: a `remotion bundle` directory or an http(s) URL. */
   serveUrl?: string;
   compositionId: string;
@@ -76,6 +81,10 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
   }
   const env = opts.env ?? process.env;
   const progress = opts.onProgress ?? (() => undefined);
+  const signal = opts.signal;
+  // Between stages: Remotion only cancels renderMedia/renderStill themselves.
+  const checkpoint = () => signal?.throwIfAborted();
+  checkpoint();
   const publicDir = path.resolve(opts.publicDir ?? "public");
   let props = opts.inputProps;
 
@@ -93,7 +102,7 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
       if (!opts.voice && opts.serveUrl) {
         throw new Error("renderComposition: voicing a prebuilt serveUrl needs `voice` (a dir and an http URL builder).");
       }
-      const voiceover = await voiceNarration(narration, { provider, dir: voice.dir, toSrc: voice.toSrc, env });
+      const voiceover = await voiceNarration(narration, { provider, dir: voice.dir, toSrc: voice.toSrc, env, signal });
       props = (opts.withVoiceover ?? ((p, v) => ({ ...p, voiceover: v })))(props, voiceover);
       progress("voicing", 1);
     }
@@ -101,17 +110,20 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
 
   const { renderMedia, renderStill, selectComposition } = await import("@remotion/renderer");
   let serveUrl = opts.serveUrl;
+  checkpoint();
   if (opts.entryPoint) {
     const { bundle } = await import("@remotion/bundler");
     progress("bundling", 0);
     serveUrl = await bundle({
       entryPoint: path.resolve(opts.entryPoint),
       publicDir,
-      rspack: true,
+      webpackOverride: opts.webpackOverride,
+      rspack: opts.rspack ?? false,
       onProgress: (p) => progress("bundling", p / 100),
     });
   }
 
+  checkpoint();
   progress("selecting", 0);
   const browserExecutable = opts.browserExecutable ?? env.REMOTION_BROWSER_EXECUTABLE ?? null;
   const composition = await selectComposition({
@@ -127,15 +139,25 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
     );
   }
 
+  checkpoint();
   const output = path.resolve(opts.output);
   await mkdir(path.dirname(output), { recursive: true });
-  const cancel = opts.signal ? await cancelSignalFrom(opts.signal) : undefined;
+  const cancel = signal ? await cancelSignalFrom(signal) : undefined;
 
   let poster: string | null = null;
   if (opts.still) {
     const frame = Math.min(Math.max(0, Math.round(opts.still.frame)), composition.durationInFrames - 1);
     progress("rendering", 0);
-    await renderStill({ composition, serveUrl: serveUrl!, output, frame, inputProps: props, browserExecutable, imageFormat: "png" });
+    await renderStill({
+      composition,
+      serveUrl: serveUrl!,
+      output,
+      frame,
+      inputProps: props,
+      browserExecutable,
+      imageFormat: "png",
+      cancelSignal: cancel,
+    });
     progress("rendering", 1);
   } else {
     await renderMedia({
@@ -152,6 +174,7 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
       onProgress: ({ progress: p }) => progress("rendering", p),
     });
     if (opts.poster !== false) {
+      checkpoint();
       const frame = Math.min(opts.poster?.frame ?? 60, composition.durationInFrames - 1);
       poster = output.replace(/\.[^./]+$/, "") + ".poster.png";
       progress("poster", 0);
@@ -163,10 +186,13 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
         inputProps: props,
         browserExecutable,
         imageFormat: "png",
+        cancelSignal: cancel,
       });
       progress("poster", 1);
     }
   }
+  // Canceled after the last frame: the caller asked for no result, so don't report one.
+  checkpoint();
 
   return {
     output,

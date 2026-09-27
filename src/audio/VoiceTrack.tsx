@@ -1,5 +1,6 @@
 import { Audio } from "@remotion/media";
 import type { Voiceover } from "../schema.js";
+import { own } from "../timing/fitScenesToVoice.js";
 import { resolveSound } from "./library.js";
 
 /**
@@ -17,7 +18,7 @@ export const VoiceTrack: React.FC<{
   return (
     <>
       {Object.entries(voiceover).map(([scene, clip]) => {
-        const from = starts[scene];
+        const from = own(starts, scene);
         if (!clip || from === null || from === undefined) return null;
         return (
           <Audio

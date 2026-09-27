@@ -9,3 +9,4 @@ out/
 service/bundle/
 *.tgz
 .DS_Store
+service/smoke.mp4

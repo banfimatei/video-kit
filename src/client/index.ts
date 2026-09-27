@@ -23,7 +23,11 @@ export interface RenderRequest {
   frame?: number;
   /** Poster frame for a video, or false for none. Default 60. */
   poster?: number | false;
-  /** POSTed the finished job (JSON) when it completes or fails, signed with X-Video-Kit-Signature. */
+  /**
+   * POSTed the finished job (JSON) when it is done, failed or canceled, signed
+   * with X-Video-Kit-Signature (check it with verifyWebhook). Delivered at
+   * least once: dedupe by job id. Must be a public http(s) host.
+   */
   webhookUrl?: string;
 }
 
@@ -126,8 +130,15 @@ export function createVideoKitClient(opts: VideoKitClientOptions) {
       // keep the text
     }
     if (!res.ok) {
-      const message =
-        parsed && typeof parsed === "object" && "error" in parsed ? String((parsed as { error: unknown }).error) : text;
+      const body = parsed && typeof parsed === "object" ? (parsed as { error?: unknown; details?: unknown; issues?: unknown }) : null;
+      let message = body && "error" in body ? String(body.error) : text;
+      // Validation errors name the fields: put them in the message, not only in .body.
+      const list = Array.isArray(body?.details) ? body.details : Array.isArray(body?.issues) ? body.issues : null;
+      if (list?.length) {
+        message += ` (${list
+          .map((i: { path?: unknown; message?: unknown }) => (i.path ? `${String(i.path)}: ${String(i.message)}` : String(i.message)))
+          .join("; ")})`;
+      }
       throw new VideoKitError(`${method} ${route} → ${res.status}: ${message}`, res.status, parsed);
     }
     return parsed as T;
@@ -180,3 +191,39 @@ export function createVideoKitClient(opts: VideoKitClientOptions) {
 }
 
 export type VideoKitClient = ReturnType<typeof createVideoKitClient>;
+
+const encoder = new TextEncoder();
+const toHex = (buf: ArrayBuffer) => [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+async function hmacHex(key: string, data: string): Promise<string> {
+  const k = await crypto.subtle.importKey("raw", encoder.encode(key), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return toHex(await crypto.subtle.sign("HMAC", k, encoder.encode(data)));
+}
+
+/**
+ * The key webhooks are signed with when the service has no WEBHOOK_SECRET of
+ * its own: derived from the API key, so whoever can call the API can verify.
+ */
+export function webhookSecretFromApiKey(apiKey: string): Promise<string> {
+  return hmacHex(apiKey, "video-kit:webhook");
+}
+
+/**
+ * Check a webhook's `X-Video-Kit-Signature` against its raw body (the exact
+ * bytes received, before JSON.parse). Pass the service's WEBHOOK_SECRET, or
+ * the API key when the service derives it.
+ */
+export async function verifyWebhook(
+  rawBody: string,
+  signature: string | null | undefined,
+  key: { secret: string } | { apiKey: string },
+): Promise<boolean> {
+  const m = /^sha256=([0-9a-f]{64})$/.exec(signature ?? "");
+  if (!m) return false;
+  const secret = "secret" in key ? key.secret : await webhookSecretFromApiKey(key.apiKey);
+  const want = await hmacHex(secret, rawBody);
+  // Constant-time compare over equal-length hex strings.
+  let diff = 0;
+  for (let i = 0; i < want.length; i++) diff |= want.charCodeAt(i) ^ m[1].charCodeAt(i);
+  return diff === 0;
+}

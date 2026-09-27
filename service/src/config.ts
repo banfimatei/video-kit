@@ -9,8 +9,19 @@ const envSchema = z.object({
   /** "::" listens on IPv4 and IPv6 (Railway's private network is IPv6). */
   HOST: z.string().default("::"),
   RENDER_API_KEY: z.string().min(16, "RENDER_API_KEY must be at least 16 characters"),
-  /** Signs file URLs and webhooks. Default: derived from RENDER_API_KEY, so rotating the key revokes old URLs. */
+  /** Signs file URLs. Default: derived from RENDER_API_KEY, so rotating the key revokes old URLs. */
   SIGNING_SECRET: z.string().min(16).optional(),
+  /**
+   * Signs webhook bodies; receivers hold it. Default: derived from
+   * RENDER_API_KEY (see webhookSecretFromApiKey in the client). Separate from
+   * SIGNING_SECRET, so a receiver can never mint file links.
+   */
+  WEBHOOK_SECRET: z.string().min(16).optional(),
+  /** Allow webhooks and template media URLs on private addresses (e.g. *.railway.internal siblings). Off: public hosts only. */
+  ALLOW_PRIVATE_URLS: z
+    .enum(["0", "1", "true", "false"])
+    .default("0")
+    .transform((v) => v === "1" || v === "true"),
   /** Public base for file URLs. Default https://$RAILWAY_PUBLIC_DOMAIN, else the request's own origin. */
   PUBLIC_URL: z.string().url().optional(),
   RAILWAY_PUBLIC_DOMAIN: z.string().optional(),
@@ -22,6 +33,18 @@ const envSchema = z.object({
   FRAME_CONCURRENCY: z.coerce.number().int().min(1).max(32).optional(),
   MAX_QUEUE: z.coerce.number().int().min(1).default(25),
   MAX_RENDER_SECONDS: z.coerce.number().positive().default(180),
+  /**
+   * Seconds between SIGTERM and SIGKILL on a redeploy; running renders get
+   * this long to finish. Railway's own variable of the same meaning is read
+   * when this isn't set.
+   */
+  DRAINING_SECONDS: z.coerce.number().min(0).optional(),
+  RAILWAY_DEPLOYMENT_DRAINING_SECONDS: z.coerce.number().min(0).default(0),
+  /** A job (voicing, selecting, rendering, poster) that runs longer than this is failed. */
+  JOB_TIMEOUT_MINUTES: z.coerce.number().positive().default(45),
+  /** Narration a render may ask the service to voice: total characters and lines. */
+  MAX_NARRATION_CHARS: z.coerce.number().int().positive().default(12_000),
+  MAX_NARRATION_LINES: z.coerce.number().int().positive().default(40),
   MAX_SITE_MB: z.coerce.number().positive().default(300),
   MAX_BODY_KB: z.coerce.number().positive().default(1024),
   RETENTION_DAYS: z.coerce.number().positive().default(7),
@@ -49,7 +72,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     voiceDir: path.join(dataDir, "voice"),
     tmpDir: path.join(dataDir, "tmp"),
     builtinBundleDir: path.resolve(c.BUILTIN_BUNDLE_DIR),
-    signingSecret: c.SIGNING_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:signing").digest("hex"),
+    signingSecret: c.SIGNING_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:files").digest("hex"),
+    DRAINING_SECONDS: c.DRAINING_SECONDS ?? c.RAILWAY_DEPLOYMENT_DRAINING_SECONDS,
+    webhookSecret: c.WEBHOOK_SECRET ?? createHmac("sha256", c.RENDER_API_KEY).update("video-kit:webhook").digest("hex"),
+    /** Longest a file link may live: what the service issues, plus clock slack. */
+    maxLinkSeconds: c.URL_TTL_HOURS * 3600 + 300,
     publicUrl: c.PUBLIC_URL ?? (c.RAILWAY_PUBLIC_DOMAIN ? `https://${c.RAILWAY_PUBLIC_DOMAIN}` : undefined),
     /** Where the service's own headless Chrome fetches voice clips from. */
     internalUrl: `http://127.0.0.1:${c.PORT}`,

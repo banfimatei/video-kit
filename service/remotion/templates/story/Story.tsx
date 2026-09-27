@@ -2,9 +2,9 @@ import { SfxCues, VoiceTrack, type SfxCue } from "@banfimatei/video-kit";
 import { linearTiming, TransitionSeries } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { AbsoluteFill, useVideoConfig } from "remotion";
+import { storyFrame } from "./layout";
 import { Chrome, Scene } from "./Scene";
-import { sceneId, storySchema, type StoryProps } from "./schema";
-import { STORY_TRANSITION, storyTimeline } from "./timeline";
+import { sceneId, STORY_TRANSITION, storySchema, storyTimeline, type StoryProps } from "./schema";
 
 /** Quiet cues on the beats: a tick as each title lands, a whoosh through each crossfade, a chime on the last scene. */
 function houseCues(ids: string[], fps: number): SfxCue[] {
@@ -24,7 +24,8 @@ function houseCues(ids: string[], fps: number): SfxCue[] {
  */
 export const Story: React.FC<StoryProps> = (raw) => {
   const props = storySchema.parse(raw);
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
+  const layout = storyFrame(props, width, height);
   const t = storyTimeline(props, fps);
   const ids = props.scenes.map((s, i) => sceneId(s, i));
 
@@ -40,11 +41,11 @@ export const Story: React.FC<StoryProps> = (raw) => {
             />
           ) : null,
           <TransitionSeries.Sequence key={ids[i]} name={`Scene ${ids[i]}`} durationInFrames={t.durations[ids[i]] as number}>
-            <Scene scene={scene} theme={props.theme} isFirst={i === 0} />
+            <Scene scene={scene} theme={props.theme} isFirst={i === 0} layout={layout} />
           </TransitionSeries.Sequence>,
         ])}
       </TransitionSeries>
-      <Chrome props={props} />
+      <Chrome props={props} layout={layout} />
       <VoiceTrack voiceover={props.voiceover} starts={t.voiceStarts} />
       {props.soundDesign === "none" ? null : (
         <SfxCues cues={houseCues(ids, fps)} starts={t.starts} label="House" leadFrames={(c) => (c.sound === "whoosh" ? 4 : 0)} />

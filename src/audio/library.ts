@@ -1,5 +1,6 @@
 import * as remotionSfx from "@remotion/sfx";
 import { staticFile } from "remotion";
+import type { HouseSound } from "../schema.js";
 import chime from "../../assets/sfx/chime.wav";
 import page from "../../assets/sfx/page.wav";
 import riser from "../../assets/sfx/riser.wav";
@@ -12,7 +13,7 @@ import whoosh from "../../assets/sfx/whoosh.wav";
  * They ship inside this package and the Remotion bundler emits them with the
  * project, so they play with no network and carry no licence.
  */
-export const HOUSE_SFX = { tick, whoosh, thud, chime, riser, page } as const;
+export const HOUSE_SFX = { tick, whoosh, thud, chime, riser, page } as const satisfies Record<HouseSound, string>;
 export type HouseSfx = keyof typeof HOUSE_SFX;
 export const HOUSE_SFX_NAMES = Object.keys(HOUSE_SFX) as HouseSfx[];
 

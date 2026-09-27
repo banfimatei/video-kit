@@ -1,3 +1,4 @@
+import { rm } from "node:fs/promises";
 import path from "node:path";
 import type { HttpBindings } from "@hono/node-server";
 import type { RenderKind, RenderRequest } from "@banfimatei/video-kit/client";
@@ -6,11 +7,13 @@ import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
 import { bearerToken, safeEqual, verifySignedPath } from "./auth.js";
 import type { Config } from "./config.js";
-import { fileResponse } from "./files.js";
+import { contentDisposition, fileResponse } from "./files.js";
 import { TERMINAL, type JobStore, type RenderQueue } from "./jobs.js";
+import { assertPublicUrl, UnsafeTargetError } from "./net.js";
+import { checkProps } from "./props.js";
 import type { Runner } from "./runner.js";
 import { BUILTIN, HttpError, type Sites } from "./sites.js";
-import { BUILTIN_TEMPLATES, builtinJsonSchema } from "./templates.js";
+import { builtinJsonSchema } from "./templates.js";
 
 const renderRequestSchema = z.object({
   site: z.string().min(1).max(63).default(BUILTIN),
@@ -22,6 +25,7 @@ const renderRequestSchema = z.object({
   poster: z.union([z.number().int().min(0), z.literal(false)]).optional(),
   webhookUrl: z
     .string()
+    .max(2000)
     .url()
     .refine((u) => /^https?:\/\//i.test(u), "webhookUrl must be http(s)")
     .optional(),
@@ -41,6 +45,8 @@ export interface AppDeps {
   sites: Sites;
   runner: Runner;
   version: string;
+  /** True once the service is shutting down: new renders and deploys get a 503. */
+  draining?: () => boolean;
 }
 
 /** The origin clients reached us on, for the job's file URLs. */
@@ -51,7 +57,7 @@ function requestOrigin(c: Context<Env>, cfg: Config): string {
   return `${proto}://${host}`;
 }
 
-export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps) {
+export function createApp({ cfg, store, queue, sites, runner, version, draining = () => false }: AppDeps) {
   const app = new Hono<Env>();
 
   app.onError((err, c) => {
@@ -64,7 +70,7 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
   });
   app.notFound((c) => c.json({ error: "Not found" }, 404));
 
-  app.get("/healthz", (c) => c.json({ ok: true, version, queue: queue.size }));
+  app.get("/healthz", (c) => c.json({ ok: !draining(), version, queue: queue.size }, draining() ? 503 : 200));
 
   // Voice clips for the service's own headless Chrome only; CORS because the bundle is another origin.
   app.get("/internal/voice/:file", async (c) => {
@@ -72,20 +78,25 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
     if (!LOOPBACK.has(remote)) return c.json({ error: "Not found" }, 404);
     const file = c.req.param("file");
     if (!VOICE_FILE.test(file)) return c.json({ error: "Not found" }, 404);
-    return fileResponse(path.join(cfg.voiceDir, file), c.req.header("range"), { "Access-Control-Allow-Origin": "*" });
+    return fileResponse(path.join(cfg.voiceDir, file), { method: c.req.method, range: c.req.header("range") }, {
+      "Access-Control-Allow-Origin": "*",
+    });
   });
 
   // Render outputs: a signed URL (from the job) or the API key.
   app.get("/files/:id/:file", async (c) => {
     const { id, file } = c.req.param();
     if (!ID.test(id) || !RENDER_FILES.has(file)) return c.json({ error: "Not found" }, 404);
-    const signed = verifySignedPath(cfg.signingSecret, `/files/${id}/${file}`, c.req.query("exp"), c.req.query("sig"));
+    const signed = verifySignedPath(cfg.signingSecret, `/files/${id}/${file}`, c.req.query("exp"), c.req.query("sig"), {
+      maxTtlSeconds: cfg.maxLinkSeconds,
+    });
     const token = bearerToken(c.req.header("authorization"));
     if (!signed && !(token && safeEqual(token, cfg.RENDER_API_KEY))) return c.json({ error: "Link expired or invalid" }, 403);
     const job = store.get(id);
     if (!job || job.status !== "done") return c.json({ error: "Not found" }, 404);
-    return fileResponse(path.join(cfg.rendersDir, id, file), c.req.header("range"), {
-      "Content-Disposition": `inline; filename="${job.composition}-${id.slice(0, 8)}${path.extname(file)}"`,
+    const name = `${job.composition}-${id.slice(0, 8)}${file.endsWith(".poster.png") ? ".poster.png" : path.extname(file)}`;
+    return fileResponse(path.join(cfg.rendersDir, id, file), { method: c.req.method, range: c.req.header("range") }, {
+      "Content-Disposition": contentDisposition("inline", name),
     });
   });
 
@@ -93,6 +104,10 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
   v1.use("*", async (c, next) => {
     const token = bearerToken(c.req.header("authorization"));
     if (!token || !safeEqual(token, cfg.RENDER_API_KEY)) return c.json({ error: "Missing or wrong API key" }, 401);
+    if (draining() && (c.req.method === "POST" || c.req.method === "PUT")) {
+      c.header("Retry-After", "30");
+      return c.json({ error: "The service is restarting. Try again shortly." }, 503);
+    }
     await next();
   });
 
@@ -112,7 +127,8 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
 
   v1.delete("/sites/:name", async (c) => {
     const name = c.req.param("name");
-    if (!(await sites.remove(name))) throw new HttpError(404, `No site "${name}".`);
+    const active = new Set(store.all().filter((j) => !TERMINAL.has(j.status)).map((j) => path.resolve(j.serveDir)));
+    if (!(await sites.remove(name, (dir) => active.has(path.resolve(dir))))) throw new HttpError(404, `No site "${name}".`);
     return c.json({ deleted: true });
   });
 
@@ -121,26 +137,28 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
       throw new HttpError(400, "Body must be JSON.");
     });
     const req = renderRequestSchema.parse(raw);
+    if (queue.isFull()) throw new HttpError(429, "The render queue is full. Try again shortly.");
     if (req.site !== BUILTIN && !(await sites.meta(req.site))) {
       throw new HttpError(404, `No site "${req.site}". Deploy one with PUT /v1/sites/${req.site}.`);
     }
     if (!(await sites.hasComposition(req.site, req.composition))) {
       throw new HttpError(404, `No composition "${req.composition}" in site "${req.site}". GET /v1/templates?site=${req.site} lists them.`);
     }
-    // Built-in templates validate now, so bad props are a 400 rather than a failed job.
-    if (req.site === BUILTIN && BUILTIN_TEMPLATES[req.composition]) {
+    if (req.webhookUrl) {
       try {
-        BUILTIN_TEMPLATES[req.composition].prepare(req.props);
+        await assertPublicUrl(req.webhookUrl, cfg.ALLOW_PRIVATE_URLS);
       } catch (err) {
-        if (err instanceof z.ZodError) {
-          throw new HttpError(400, "Invalid props", err.issues.map((i) => ({ path: ["props", ...i.path].join("."), message: i.message })));
-        }
+        if (err instanceof UnsafeTargetError) throw new HttpError(400, `webhookUrl: ${err.message}`);
         throw err;
       }
     }
+    // Validated and cleaned now, so bad props are a 400 rather than a failed job.
+    const props = await checkProps(cfg, req.site, req.composition, req.props);
+    const serveDir = await sites.serveDir(req.site);
+    // No await from here to push(): the capacity check and the enqueue happen together.
     if (queue.isFull()) throw new HttpError(429, "The render queue is full. Try again shortly.");
-    const job = store.create(req as RenderRequest & { site: string; kind: RenderKind }, {
-      serveDir: await sites.serveDir(req.site),
+    const job = store.create({ ...req, props } as RenderRequest & { site: string; kind: RenderKind }, {
+      serveDir,
       publicBase: requestOrigin(c, cfg),
     });
     queue.push(job.id);
@@ -161,12 +179,10 @@ export function createApp({ cfg, store, queue, sites, runner, version }: AppDeps
     const job = store.get(id);
     if (!job) throw new HttpError(404, "No such render.");
     if (!TERMINAL.has(job.status)) {
-      const wasQueued = job.status === "queued";
-      queue.cancel(id);
-      if (wasQueued) store.update(id, { status: "canceled", error: "Canceled.", finishedAt: new Date().toISOString() });
+      // A running render finishes itself as canceled once its abort lands; anything else is closed out here.
+      if (queue.cancel(id) !== "running") runner.finish(id, "canceled", "Canceled.");
       return c.json(runner.view(store.get(id)!));
     }
-    const { rm } = await import("node:fs/promises");
     await rm(path.join(cfg.rendersDir, id), { recursive: true, force: true });
     await store.remove(id);
     return c.json({ ...runner.view(job), deleted: true });

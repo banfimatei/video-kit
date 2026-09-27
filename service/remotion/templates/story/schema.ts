@@ -1,4 +1,5 @@
-import { audioPropsSchema } from "@banfimatei/video-kit/core";
+import { audioPropsSchema, fitScenesToVoice, HOUSE_SOUNDS, sfxCueSchema } from "@banfimatei/video-kit/core";
+import * as remotionSfx from "@remotion/sfx";
 import { z } from "zod";
 
 export const ASPECTS = {
@@ -9,16 +10,21 @@ export const ASPECTS = {
 } as const;
 
 export const storySceneSchema = z.object({
-  /** Stable id for narration, voiceover and sfx keys. Default s0, s1, … */
+  /** Stable id for narration, voiceover and sfx keys, unique within the video. Default s0, s1, … */
   id: z
     .string()
     .regex(/^[A-Za-z0-9_-]{1,40}$/)
+    .refine((id) => id !== "__proto__", "id can't be __proto__")
     .optional(),
   kicker: z.string().max(80).optional(),
   title: z.string().min(1).max(160),
   body: z.string().max(400).optional(),
   /** Full-bleed background image (https URL), slowly zoomed, darkened under the type. */
-  image: z.string().url().optional(),
+  image: z
+    .string()
+    .url()
+    .refine((u) => /^https:\/\//i.test(u), "image must be an https URL")
+    .optional(),
   /** What the voice says over this scene. */
   narration: z.string().max(1200).optional(),
   /** Minimum on-screen seconds; the scene still stretches to fit its narration. */
@@ -52,27 +58,108 @@ export const storySchema = z.object({
     .optional(),
   /** A line on every frame, never animated: a disclaimer, a credit. */
   footer: z.string().max(160).optional(),
-  scenes: z.array(storySceneSchema).min(1).max(20),
+  scenes: z
+    .array(storySceneSchema)
+    .min(1)
+    .max(20)
+    .superRefine((scenes, ctx) => {
+      const seen = new Map<string, number>();
+      scenes.forEach((s, i) => {
+        const id = sceneId(s, i);
+        const first = seen.get(id);
+        if (first !== undefined) {
+          ctx.addIssue({ code: "custom", path: [i, "id"], message: `Scene id "${id}" is already used by scene ${first}; ids must be unique.` });
+        } else seen.set(id, i);
+      });
+    }),
   ...audioPropsSchema.shape,
+  /** Voice lines by scene id; each scene's own `narration` fills in the rest. */
+  narration: z.record(z.string(), z.string().max(1200).nullable()).nullable().optional(),
+  /** Extra sounds: a house cue, an @remotion/sfx name ("remotion:ding") or an https URL. */
+  sfx: z
+    .array(
+      sfxCueSchema.extend({
+        sound: z
+          .string()
+          .refine(isStorySound, `sound must be a house cue (${HOUSE_SOUNDS.join(", ")}), remotion:<a @remotion/sfx name> or an https URL`),
+      }),
+    )
+    .max(100)
+    .optional(),
 });
+
+const REMOTION_SOUNDS = new Set(Object.keys(remotionSfx));
+
+function isStorySound(sound: string): boolean {
+  if ((HOUSE_SOUNDS as readonly string[]).includes(sound)) return true;
+  if (sound.startsWith("remotion:")) return REMOTION_SOUNDS.has(sound.slice("remotion:".length));
+  return /^https:\/\//i.test(sound);
+}
+
+/** Every remote URL the props make Chrome fetch (the service checks each host). */
+export function storyUrls(props: ParsedStoryProps): string[] {
+  return [
+    ...props.scenes.flatMap((s) => (s.image ? [s.image] : [])),
+    ...(props.sfx ?? []).flatMap((c) => (/^https:\/\//i.test(c.sound) ? [c.sound] : [])),
+  ];
+}
 
 export type StoryProps = z.input<typeof storySchema>;
 export type ParsedStoryProps = z.output<typeof storySchema>;
 export type StoryScene = z.infer<typeof storySceneSchema>;
 
-export const sceneId = (scene: StoryScene, index: number) => scene.id ?? `s${index}`;
+export function sceneId(scene: Pick<StoryScene, "id">, index: number): string {
+  return scene.id ?? `s${index}`;
+}
 
 /**
  * Parse, apply defaults, and lift each scene's `narration` into the
  * top-level `narration` record the renderer voices (explicit top-level
- * entries win). Run before rendering, in Node.
+ * entries win; keys that aren't scene ids are dropped, since nothing would
+ * play them). Run before rendering, in Node.
  */
 export function prepareStoryProps(input: unknown): ParsedStoryProps {
   const props = storySchema.parse(input);
-  const fromScenes = Object.fromEntries(
-    props.scenes.map((s, i) => [sceneId(s, i), s.narration ?? null] as const),
-  );
-  const narration = { ...fromScenes, ...(props.narration ?? {}) };
+  const ids = props.scenes.map((s, i) => sceneId(s, i));
+  const fromScenes = Object.fromEntries(props.scenes.map((s, i) => [ids[i], s.narration ?? null] as const));
+  const explicit = Object.entries(props.narration ?? {}).filter(([k]) => ids.includes(k));
+  const narration = { ...fromScenes, ...Object.fromEntries(explicit) };
   const hasText = Object.values(narration).some((t) => t && t.trim());
-  return { ...props, narration: hasText ? narration : undefined };
+  // Every key explicit (null or empty, never absent): Remotion fills absent
+  // keys from the composition's sample defaultProps, which would put the
+  // sample brand and footer into this video.
+  return {
+    ...props,
+    brand: props.brand ?? {},
+    footer: props.footer ?? "",
+    narration: hasText ? narration : null,
+    voiceover: null,
+    soundDesign: props.soundDesign ?? "house",
+    sfx: props.sfx ?? [],
+  };
 }
+
+export const STORY_FPS = 30;
+export const STORY_TRANSITION = 12;
+
+const words = (s?: string) => (s ? s.split(/\s+/).filter(Boolean).length : 0);
+
+/** Reading time for a scene's type, clamped to 3–12s, or its `seconds` if longer. */
+export function sceneSeconds(scene: StoryScene): number {
+  const auto = Math.min(12, Math.max(3, 1.8 + 0.28 * (words(scene.title) + words(scene.body))));
+  return Math.max(auto, scene.seconds ?? 0);
+}
+
+/** Scene cuts and voice placement; read by calculateMetadata and the component alike. */
+export function storyTimeline(props: Pick<StoryProps, "scenes" | "voiceover">, fps = STORY_FPS) {
+  return fitScenesToVoice(
+    props.scenes.map((s, i) => ({ id: sceneId(s, i), frames: Math.round(sceneSeconds(s) * fps) })),
+    { fps, voiceover: props.voiceover, transitionFrames: STORY_TRANSITION },
+  );
+}
+
+/** The video's length before any voice stretches it: a floor the service checks at submit. */
+export function storyMinSeconds(props: ParsedStoryProps): number {
+  return storyTimeline({ scenes: props.scenes }).durationInFrames / STORY_FPS;
+}
+

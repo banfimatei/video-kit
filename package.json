@@ -2,12 +2,10 @@
   "name": "@banfimatei/video-kit",
   "version": "0.1.0",
   "description": "Programmatic video toolkit: voiceover, sound effects, fit-to-voice timing and rendering for Remotion projects, plus a client for the video-kit render service.",
-  "private": true,
   "license": "UNLICENSED",
   "type": "module",
-  "workspaces": [
-    "service"
-  ],
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -28,6 +26,23 @@
     "./assets/sfx/*": "./assets/sfx/*",
     "./package.json": "./package.json"
   },
+  "typesVersions": {
+    "*": {
+      "core": [
+        "dist/core.d.ts"
+      ],
+      "node": [
+        "dist/node/index.d.ts"
+      ],
+      "client": [
+        "dist/client/index.d.ts"
+      ]
+    }
+  },
+  "private": true,
+  "workspaces": [
+    "service"
+  ],
   "bin": {
     "video-kit": "./dist/node/cli.js"
   },
@@ -64,7 +79,22 @@
     "@remotion/bundler": {
       "optional": true
     },
+    "@remotion/media": {
+      "optional": true
+    },
     "@remotion/renderer": {
+      "optional": true
+    },
+    "@remotion/sfx": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "remotion": {
+      "optional": true
+    },
+    "zod": {
       "optional": true
     }
   },

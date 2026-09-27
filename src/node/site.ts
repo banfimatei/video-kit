@@ -1,19 +1,35 @@
 /**
  * Turn a Remotion project into a "site" the render service can render: bundle
- * it (as `remotion bundle` would) and pack the bundle as a gzipped tarball.
+ * it and pack the bundle as a gzipped tarball.
+ *
+ * Unlike `remotion bundle`, this doesn't read remotion.config.ts (Remotion's
+ * bundler API can't). Pass `webpackOverride` for what the config did, or run
+ * `npx remotion bundle` yourself and pack that directory.
  */
+import type { WebpackOverrideFn } from "@remotion/bundler";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import * as tar from "tar";
 
-export async function bundleSite(opts: { entryPoint: string; publicDir?: string; outDir?: string }): Promise<string> {
+export interface BundleSiteOptions {
+  entryPoint: string;
+  publicDir?: string;
+  outDir?: string;
+  /** What remotion.config.ts's Config.overrideWebpackConfig would do. */
+  webpackOverride?: WebpackOverrideFn;
+  /** Bundle with Rspack (faster; Remotion calls it experimental). Default: webpack, like `remotion bundle`. */
+  rspack?: boolean;
+}
+
+export async function bundleSite(opts: BundleSiteOptions): Promise<string> {
   const { bundle } = await import("@remotion/bundler");
   return bundle({
     entryPoint: path.resolve(opts.entryPoint),
     publicDir: path.resolve(opts.publicDir ?? "public"),
     outDir: opts.outDir ? path.resolve(opts.outDir) : undefined,
-    rspack: true,
+    webpackOverride: opts.webpackOverride,
+    rspack: opts.rspack ?? false,
   });
 }
 

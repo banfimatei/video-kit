@@ -67,3 +67,25 @@ describe("fitScenesToVoice", () => {
     expect(fitScenesToVoice([{ id: "a", frames: null }], { fps: 30 }).durationInFrames).toBe(1);
   });
 });
+
+describe("fitScenesToVoice guards", () => {
+  it("refuses duplicate scene ids instead of silently merging them", () => {
+    expect(() => fitScenesToVoice([{ id: "a", frames: 90 }, { id: "a", frames: 300 }], { fps: 30 })).toThrow(/used twice/);
+  });
+
+  it("treats prototype names as ordinary ids", () => {
+    const voiceover = { constructor: { src: "v.wav", durationInSeconds: 2 } } as never;
+    const t = fitScenesToVoice([{ id: "__proto__", frames: 60 }, { id: "constructor", frames: 30 }], { fps: 30, voiceover });
+    expect(t.durations.__proto__).toBe(60);
+    expect(t.starts.constructor).toBe(60);
+    expect(t.voiceStarts.constructor).toBe(60);
+    expect(t.starts.toString).toBeUndefined();
+  });
+
+  it("never makes a scene shorter than the transition that joins it", () => {
+    const t = fitScenesToVoice([{ id: "a", frames: 60 }, { id: "b", frames: 8 }, { id: "c", frames: 0 }], { fps: 30, transitionFrames: 12 });
+    expect(t.durations).toEqual({ a: 60, b: 13, c: 13 });
+    expect(t.starts.b! < t.starts.c!).toBe(true);
+  });
+});
+

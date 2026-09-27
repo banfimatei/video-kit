@@ -25,6 +25,8 @@ export class HttpError extends Error {
 interface SiteMeta extends SiteInfo {
   current: string;
   templates: TemplateInfo[];
+  /** Earlier versions and when each stopped being current (retention ages them from then). */
+  retired?: Record<string, string>;
 }
 
 type Composition = Omit<TemplateInfo, "site" | "schema">;
@@ -37,6 +39,8 @@ type Composition = Omit<TemplateInfo, "site" | "schema">;
  */
 export class Sites {
   private builtin: Composition[] = [];
+  /** Deploys run one at a time: each unpacks up to 4× MAX_SITE_MB and starts a Chrome. */
+  private deploying: Promise<unknown> = Promise.resolve();
 
   constructor(
     private cfg: Config,
@@ -104,7 +108,13 @@ export class Sites {
    * the target, check it is a Remotion bundle by listing its compositions,
    * then point the site at it.
    */
-  async deploy(name: string, body: WebReadableStream<Uint8Array> | null): Promise<SiteInfo> {
+  deploy(name: string, body: WebReadableStream<Uint8Array> | null): Promise<SiteInfo> {
+    const run = this.deploying.then(() => this.deployNow(name, body));
+    this.deploying = run.catch(() => undefined);
+    return run;
+  }
+
+  private async deployNow(name: string, body: WebReadableStream<Uint8Array> | null): Promise<SiteInfo> {
     if (!Sites.validName(name)) {
       throw new HttpError(400, `Site names are lowercase letters, digits and dashes (max 63), and "${BUILTIN}" is reserved.`);
     }
@@ -138,6 +148,8 @@ export class Sites {
           cwd: partial,
           strict: true,
           preservePaths: false,
+          // Deploy time, not the archive's, so directory ages mean something here.
+          noMtime: true,
           filter: (p, entry) => {
             const type = "type" in entry ? entry.type : undefined;
             if (type !== "File" && type !== "Directory" && type !== "OldFile") return false;
@@ -168,13 +180,16 @@ export class Sites {
       }
       const finalDir = path.join(siteDir, version);
       await rename(partial, finalDir);
+      const previous = await this.meta(name);
+      const now = new Date().toISOString();
       const meta: SiteMeta = {
         name,
-        uploadedAt: new Date().toISOString(),
+        uploadedAt: now,
         bytes,
         compositions: compositions.map((c) => c.id),
         current: version,
         templates: compositions.map((c) => ({ ...c, site: name })),
+        retired: previous ? retiredVersions(siteDir, previous, now) : undefined,
       };
       const tmpMeta = `${this.metaFile(name)}.${version}.tmp`;
       await writeFile(tmpMeta, JSON.stringify(meta));
@@ -186,25 +201,48 @@ export class Sites {
     }
   }
 
-  async remove(name: string): Promise<boolean> {
-    if (!Sites.validName(name) || !(await this.meta(name))) return false;
-    await rm(path.join(this.cfg.sitesDir, name), { recursive: true, force: true });
-    return true;
+  /**
+   * Delete a site. Refused (409) while `inUse` says a queued or running
+   * render still reads one of its versions. Waits for any deploy in flight.
+   */
+  async remove(name: string, inUse: (serveDir: string) => boolean): Promise<boolean> {
+    const run = this.deploying.then(async () => {
+      if (!Sites.validName(name) || !(await this.meta(name))) return false;
+      const siteDir = path.join(this.cfg.sitesDir, name);
+      for (const v of await readdir(siteDir).catch(() => [] as string[])) {
+        if (inUse(path.join(siteDir, v))) {
+          throw new HttpError(409, `Site "${name}" has renders queued or running; cancel them or wait, then delete it.`);
+        }
+      }
+      await rm(siteDir, { recursive: true, force: true });
+      return true;
+    });
+    this.deploying = run.catch(() => undefined);
+    return run;
   }
 
-  /** Versions other than a site's current one, with their age in ms. */
+  /** Versions other than a site's current one, with the time since each was replaced. */
   async staleVersions(): Promise<Array<{ dir: string; ageMs: number }>> {
     const out: Array<{ dir: string; ageMs: number }> = [];
-    for (const name of await readdir(this.cfg.sitesDir).catch(() => [])) {
+    for (const name of await readdir(this.cfg.sitesDir).catch(() => [] as string[])) {
       const meta = await this.meta(name);
       if (!meta) continue;
-      for (const v of await readdir(path.join(this.cfg.sitesDir, name))) {
+      for (const v of await readdir(path.join(this.cfg.sitesDir, name)).catch(() => [] as string[])) {
+        // Orphaned `.partial` dirs from a crashed deploy age out here too (by mtime).
         if (v === meta.current || v === "meta.json" || v.endsWith(".tmp")) continue;
         const dir = path.join(this.cfg.sitesDir, name, v);
         const s = await stat(dir).catch(() => null);
-        if (s?.isDirectory()) out.push({ dir, ageMs: Date.now() - s.mtimeMs });
+        if (!s?.isDirectory()) continue;
+        const retiredAt = meta.retired?.[v] ? Date.parse(meta.retired[v]) : s.mtimeMs;
+        out.push({ dir, ageMs: Date.now() - retiredAt });
       }
     }
     return out;
   }
+}
+
+/** The previous meta's retired versions that still exist, plus its current one, retired now. */
+function retiredVersions(siteDir: string, previous: SiteMeta, now: string): Record<string, string> {
+  const kept = Object.entries(previous.retired ?? {}).filter(([v]) => existsSync(path.join(siteDir, v)));
+  return { ...Object.fromEntries(kept), [previous.current]: now };
 }

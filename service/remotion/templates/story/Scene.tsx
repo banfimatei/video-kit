@@ -1,30 +1,28 @@
 import { Fragment } from "react";
 import { AbsoluteFill, Easing, Img, Interactive, interpolate, useCurrentFrame, useVideoConfig } from "remotion";
 import { FONT_STACK } from "../../fonts";
+import { sceneType, type StoryFrame } from "./layout";
 import type { ParsedStoryProps, StoryScene } from "./schema";
 
 type Theme = ParsedStoryProps["theme"];
 
 const ease = { extrapolateLeft: "clamp", extrapolateRight: "clamp", easing: Easing.bezier(0.16, 1, 0.3, 1) } as const;
 
-/** Headline size for the canvas and the title's length. */
-function titleSize(title: string, width: number, height: number): number {
-  const base = height > width ? 96 : 84; // 1080-wide portrait; 1920-wide landscape uses the height scale
-  const scale = height > width ? width / 1080 : height / 1080;
-  const len = title.length;
-  return Math.round((len > 100 ? base * 0.66 : len > 60 ? base * 0.8 : base) * scale);
-}
-
 /**
  * One scene: kicker, title (word by word), body, over an optional
  * full-bleed image that slowly pushes in. Opaque, so fade() crossfades.
  * Reveals start at frame 10, after the incoming crossfade covers the page.
  */
-export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean }> = ({ scene, theme, isFirst }) => {
+export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean; layout: StoryFrame }> = ({
+  scene,
+  theme,
+  isFirst,
+  layout,
+}) => {
   const frame = useCurrentFrame();
-  const { width, height, durationInFrames } = useVideoConfig();
-  const portrait = height >= width;
-  const unit = (portrait ? width : height) / 1080;
+  const { durationInFrames } = useVideoConfig();
+  const unit = layout.unit;
+  const type = sceneType(scene, theme.font, layout);
   const start = isFirst ? 2 : 10;
   const words = scene.title.split(/\s+/);
   const wordAt = (i: number) => start + 6 + i * 2;
@@ -52,13 +50,15 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
       ) : null}
       <AbsoluteFill
         style={{
-          padding: portrait
-            ? `${Math.round(height * 0.14)}px ${Math.round(width * 0.09)}px ${Math.round(height * 0.2)}px`
-            : `${Math.round(height * 0.16)}px ${Math.round(width * 0.08)}px ${Math.round(height * 0.2)}px`,
+          // The content box from storyFrame(): clear of the brand above and the footer below.
+          top: layout.content.top,
+          bottom: layout.content.bottom,
+          left: layout.side,
+          width: layout.content.width,
+          height: layout.content.height,
           display: "flex",
           flexDirection: "column",
           justifyContent: scene.image ? "flex-end" : "center",
-          maxWidth: portrait ? undefined : Math.round(width * 0.72),
         }}
       >
         {scene.kicker ? (
@@ -67,11 +67,12 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
             style={{
               fontFamily: FONT_STACK.mono,
               fontWeight: 500,
-              fontSize: Math.round(30 * unit),
+              fontSize: Math.round(type.kicker),
+              lineHeight: 1.25,
               letterSpacing: 4 * unit,
               textTransform: "uppercase",
               color: theme.accent,
-              marginBottom: Math.round(32 * unit),
+              marginBottom: Math.round(type.kickerGap),
               opacity: interpolate(frame, [start, start + 18], [0, 1], ease),
               translate: interpolate(frame, [start, start + 18], ["0px 24px", "0px 0px"], ease),
             }}
@@ -83,9 +84,9 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
           style={{
             fontFamily: FONT_STACK[theme.font],
             fontWeight: theme.font === "sans" ? 700 : 500,
-            fontSize: titleSize(scene.title, width, height),
+            fontSize: type.title,
             lineHeight: 1.08,
-            letterSpacing: theme.font === "mono" ? 0 : -1.5 * unit,
+            letterSpacing: type.titleTracking,
             color: theme.foreground,
           }}
         >
@@ -110,10 +111,10 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
             style={{
               fontFamily: FONT_STACK.sans,
               fontWeight: 400,
-              fontSize: Math.round(44 * unit),
+              fontSize: type.body,
               lineHeight: 1.35,
               color: theme.muted,
-              marginTop: Math.round(40 * unit),
+              marginTop: type.bodyGap,
               opacity: interpolate(frame, [bodyAt, bodyAt + 18], [0, 1], ease),
               translate: interpolate(frame, [bodyAt, bodyAt + 18], ["0px 20px", "0px 0px"], ease),
             }}
@@ -127,11 +128,9 @@ export const Scene: React.FC<{ scene: StoryScene; theme: Theme; isFirst: boolean
 };
 
 /** Brand mark, URL and footer line: on every frame, above the transitions, never animated. */
-export const Chrome: React.FC<{ props: ParsedStoryProps }> = ({ props }) => {
-  const { width, height } = useVideoConfig();
-  const unit = (height >= width ? width : height) / 1080;
+export const Chrome: React.FC<{ props: ParsedStoryProps; layout: StoryFrame }> = ({ props, layout }) => {
+  const { unit, side } = layout;
   const { theme, brand, footer } = props;
-  const side = Math.round(width * (height >= width ? 0.09 : 0.08));
   if (!brand?.name && !brand?.url && !footer) return null;
   return (
     <AbsoluteFill style={{ pointerEvents: "none" }}>
@@ -140,7 +139,7 @@ export const Chrome: React.FC<{ props: ParsedStoryProps }> = ({ props }) => {
           name="Brand"
           style={{
             position: "absolute",
-            top: Math.round(height * 0.06),
+            top: layout.brandTop,
             left: side,
             display: "flex",
             alignItems: "center",
@@ -162,7 +161,7 @@ export const Chrome: React.FC<{ props: ParsedStoryProps }> = ({ props }) => {
             position: "absolute",
             left: side,
             right: side,
-            bottom: Math.round(height * (height >= width ? 0.09 : 0.07)),
+            bottom: layout.footerBottom,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "flex-end",
@@ -171,7 +170,7 @@ export const Chrome: React.FC<{ props: ParsedStoryProps }> = ({ props }) => {
             paddingTop: Math.round(24 * unit),
           }}
         >
-          <div style={{ flex: 1, fontFamily: FONT_STACK.mono, fontSize: Math.round(24 * unit), lineHeight: 1.45, color: theme.muted }}>
+          <div style={{ flex: 1, minWidth: 0, fontFamily: FONT_STACK.mono, fontSize: Math.round(24 * unit), lineHeight: 1.45, color: theme.muted }}>
             {footer ?? ""}
           </div>
           {brand?.url ? (
@@ -181,6 +180,9 @@ export const Chrome: React.FC<{ props: ParsedStoryProps }> = ({ props }) => {
                 fontWeight: 500,
                 fontSize: Math.round(30 * unit),
                 whiteSpace: "nowrap",
+                maxWidth: layout.urlMaxWidth,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
                 color: theme.accent,
               }}
             >
