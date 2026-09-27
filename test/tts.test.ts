@@ -210,21 +210,27 @@ describe("voiceNarration", () => {
   it("speaks through OpenRouter's /audio/speech as mp3, with tone instructions only for OpenAI models", async () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const mp3 = Buffer.from([0xff, 0xf3, 0x44, 0xc4]);
+    const pcm = Buffer.alloc(4800);
     const fetchImpl = (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
-      return new Response(mp3, { headers: { "Content-Type": "audio/mpeg" } });
+      return JSON.parse(String(init.body)).response_format === "pcm"
+        ? new Response(pcm, { headers: { "Content-Type": "audio/pcm;rate=24000;channels=1" } })
+        : new Response(mp3, { headers: { "Content-Type": "audio/mpeg" } });
     }) as unknown as typeof fetch;
 
     const gemini = createSynthesizer("openrouter", { OPENROUTER_API_KEY: "r-key" }, fetchImpl);
-    expect(gemini.ext).toBe("mp3");
-    expect(await gemini.synthesize("Hello.")).toEqual(mp3);
+    expect(gemini.ext).toBe("wav");
+    const wav = await gemini.synthesize("Hello.");
+    expect(wav.toString("ascii", 0, 4)).toBe("RIFF");
+    expect(wav.readUInt32LE(24)).toBe(24000);
+    expect(wav.length).toBe(44 + pcm.length);
     expect(seen[0].url).toBe("https://openrouter.ai/api/v1/audio/speech");
     expect((seen[0].init.headers as Record<string, string>).Authorization).toBe("Bearer r-key");
     expect(JSON.parse(String(seen[0].init.body))).toEqual({
       model: "google/gemini-3.8-flash-tts",
       input: "Hello.",
       voice: "Charon",
-      response_format: "mp3",
+      response_format: "pcm",
     });
     const openai = createSynthesizer("openrouter", { OPENROUTER_API_KEY: "r-key", OPENROUTER_TTS_MODEL: "openai/some-tts", OPENROUTER_TTS_VOICE: "alloy" }, fetchImpl);
     await openai.synthesize("Hi.");
@@ -235,7 +241,8 @@ describe("voiceNarration", () => {
       { OPENROUTER_API_KEY: "r-key", OPENROUTER_TTS_MODEL: "mistralai/voxtral-mini-tts-2603", OPENROUTER_TTS_VOICE: "en_paul_neutral" },
       fetchImpl,
     );
-    await voxtral.synthesize("Hi.");
+    expect(voxtral.ext).toBe("mp3");
+    expect(await voxtral.synthesize("Hi.")).toEqual(mp3);
     const body = JSON.parse(String(seen[2].init.body));
     expect(body).toMatchObject({ model: "mistralai/voxtral-mini-tts-2603", voice: "en_paul_neutral", response_format: "mp3" });
     expect(body.provider).toBeUndefined();

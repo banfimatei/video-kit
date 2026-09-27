@@ -75,18 +75,18 @@ async function post(
   return res;
 }
 
-/** 16-bit mono PCM wrapped in a WAV header (Gemini returns raw PCM). */
-export function pcmToWav(pcm: Buffer, rate: number): Buffer {
+/** 16-bit little-endian PCM wrapped in a WAV header (Gemini and OpenRouter return raw PCM). */
+export function pcmToWav(pcm: Buffer, rate: number, channels = 1): Buffer {
   const head = Buffer.alloc(44);
   head.write("RIFF", 0);
   head.writeUInt32LE(36 + pcm.length, 4);
   head.write("WAVEfmt ", 8);
   head.writeUInt32LE(16, 16);
   head.writeUInt16LE(1, 20);
-  head.writeUInt16LE(1, 22);
+  head.writeUInt16LE(channels, 22);
   head.writeUInt32LE(rate, 24);
-  head.writeUInt32LE(rate * 2, 28);
-  head.writeUInt16LE(2, 32);
+  head.writeUInt32LE(rate * 2 * channels, 28);
+  head.writeUInt16LE(2 * channels, 32);
   head.writeUInt16LE(16, 34);
   head.write("data", 36);
   head.writeUInt32LE(pcm.length, 40);
@@ -194,9 +194,15 @@ export function createSynthesizer(
       const voice = env.OPENROUTER_TTS_VOICE || "Charon";
       const instructions = env.OPENROUTER_TTS_INSTRUCTIONS || "Measured, neutral delivery. No hype.";
       const upstream = model.split("/")[0];
+      // Formats differ by upstream: Gemini returns only pcm, Voxtral only mp3. pcm is wrapped into WAV here.
+      const format = env.OPENROUTER_TTS_FORMAT === "mp3" || env.OPENROUTER_TTS_FORMAT === "pcm"
+        ? env.OPENROUTER_TTS_FORMAT
+        : upstream === "mistralai"
+          ? "mp3"
+          : "pcm";
       return {
-        voice: `${model}/${voice}/${upstream === "openai" ? instructions : ""}`,
-        ext: "mp3",
+        voice: `${model}/${voice}/${format}/${upstream === "openai" ? instructions : ""}`,
+        ext: format === "pcm" ? "wav" : "mp3",
         synthesize: async (text, signal) => {
           const res = await post(
             fetchImpl,
@@ -212,8 +218,7 @@ export function createSynthesizer(
                 model,
                 input: text,
                 voice,
-                // The endpoint defaults to raw PCM; mp3 is a file every decoder reads.
-                response_format: "mp3",
+                response_format: format,
                 // Tone steering is an OpenAI passthrough; other upstreams would reject or ignore it.
                 ...(upstream === "openai" ? { provider: { options: { openai: { instructions } } } } : {}),
               }),
@@ -226,7 +231,12 @@ export function createSynthesizer(
             const body = await res.text().catch(() => "");
             throw new Error(`OpenRouter TTS returned ${type || "no content type"}, not audio: ${body.slice(0, 300)}`);
           }
-          return Buffer.from(await res.arrayBuffer());
+          const audio = Buffer.from(await res.arrayBuffer());
+          if (format === "mp3") return audio;
+          // audio/pcm;rate=24000;channels=1 — 16-bit little-endian samples.
+          const rate = Number(/rate=(\d+)/.exec(type)?.[1] ?? 24000);
+          const channels = Number(/channels=(\d+)/.exec(type)?.[1] ?? 1);
+          return pcmToWav(audio, rate, channels);
         },
       };
     }
