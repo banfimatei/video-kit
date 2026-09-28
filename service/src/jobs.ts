@@ -8,6 +8,7 @@ export interface StoredJob extends RenderJob {
   /** Dropped once the job is terminal: nothing reads them after the render, and they can be large. */
   props?: Record<string, unknown>;
   tts?: string;
+  ttsOptions?: { model?: string; voice?: string };
   frame?: number;
   poster?: number | false;
   webhookUrl?: string;
@@ -76,6 +77,7 @@ export class JobStore {
       createdAt: new Date().toISOString(),
       props: req.props ?? {},
       tts: req.tts,
+      ttsOptions: req.ttsOptions,
       frame: req.frame,
       poster: req.poster,
       webhookUrl: req.webhookUrl,
@@ -160,6 +162,7 @@ export function publicJob(job: StoredJob, position?: number): RenderJob {
   const {
     props: _p,
     tts: _t,
+    ttsOptions: _to,
     frame: _f,
     poster: _po,
     webhookUrl: _w,

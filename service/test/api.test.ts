@@ -35,6 +35,14 @@ describe("POST /v1/renders", () => {
     expect((await t.post({ composition: "Story", props: { scenes: [{ title: "x" }] }, webhookUrl: "file:///etc/passwd" })).status).toBe(400);
   });
 
+  it("takes a per-render voice, and 400s one that isn't a model or voice name", async () => {
+    t = await setup({}, never);
+    const base = { composition: "Story", props: { scenes: [{ title: "x" }] } };
+    expect((await t.post({ ...base, ttsOptions: { voice: "flux-hannah-en" } })).status).toBe(202);
+    expect((await t.post({ ...base, ttsOptions: { voice: "a b" } })).status).toBe(400);
+    expect((await t.post({ ...base, ttsOptions: { speed: 2 } })).status).toBe(400);
+  });
+
   it("queues a valid render, then 429s when the queue is full", async () => {
     t = await setup({ MAX_QUEUE: "1" }, never); // the first render never finishes
     const ok = { composition: "Story", props: { scenes: [{ title: "Hello" }] } };

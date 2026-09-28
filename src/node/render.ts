@@ -8,7 +8,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { WebpackOverrideFn } from "@remotion/bundler";
 import type { Narration, Voiceover } from "../schema.js";
-import { pickTtsProvider, voiceNarration, type TtsProvider } from "./tts.js";
+import { pickTtsProvider, voiceNarration, withTtsOptions, type TtsOptions, type TtsProvider } from "./tts.js";
 
 type Props = Record<string, unknown>;
 type Env = Record<string, string | undefined>;
@@ -36,6 +36,8 @@ export interface RenderCompositionOptions {
   poster?: { frame: number } | false;
   /** TTS provider, "none", or undefined to pick by whichever key is set. */
   tts?: string | null;
+  /** Model and/or voice for this render, over the provider's env defaults (withTtsOptions). */
+  ttsOptions?: TtsOptions | null;
   /** Where the composition's narration lives. Default `props.narration`. */
   narrationOf?: (props: Props) => Narration | undefined;
   /** How voiced clips go back into props. Default `{ ...props, voiceover }`. */
@@ -102,7 +104,13 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
       if (!opts.voice && opts.serveUrl) {
         throw new Error("renderComposition: voicing a prebuilt serveUrl needs `voice` (a dir and an http URL builder).");
       }
-      const voiceover = await voiceNarration(narration, { provider, dir: voice.dir, toSrc: voice.toSrc, env, signal });
+      const voiceover = await voiceNarration(narration, {
+        provider,
+        dir: voice.dir,
+        toSrc: voice.toSrc,
+        env: withTtsOptions(provider, env, opts.ttsOptions),
+        signal,
+      });
       props = (opts.withVoiceover ?? ((p, v) => ({ ...p, voiceover: v })))(props, voiceover);
       progress("voicing", 1);
     }

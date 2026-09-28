@@ -5,6 +5,7 @@ import type { RenderKind, RenderRequest } from "@banfimatei/video-kit/client";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
+import { TTS_OPTION_PATTERN } from "@banfimatei/video-kit/node";
 import { bearerToken, safeEqual, verifySignedPath } from "./auth.js";
 import type { Config } from "./config.js";
 import { contentDisposition, fileResponse } from "./files.js";
@@ -20,6 +21,13 @@ const renderRequestSchema = z.object({
   composition: z.string().min(1).max(100),
   props: z.record(z.string(), z.unknown()).default({}),
   tts: z.enum(["elevenlabs", "openai", "gemini", "deepgram", "openrouter", "espeak", "none"]).optional(),
+  ttsOptions: z
+    .object({
+      model: z.string().regex(TTS_OPTION_PATTERN, "not a model name").optional(),
+      voice: z.string().regex(TTS_OPTION_PATTERN, "not a voice name").optional(),
+    })
+    .strict()
+    .optional(),
   kind: z.enum(["video", "still"]).default("video"),
   frame: z.number().int().min(0).optional(),
   poster: z.union([z.number().int().min(0), z.literal(false)]).optional(),

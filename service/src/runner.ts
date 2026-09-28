@@ -145,6 +145,7 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
         still: still ? { frame: job.frame ?? 0 } : undefined,
         poster: still || job.poster === false ? false : { frame: job.poster ?? 60 },
         tts: job.tts,
+        ttsOptions: job.ttsOptions,
         voice: { dir: cfg.voiceDir, toSrc: (file) => `${cfg.internalUrl}/internal/voice/${file}` },
         browserExecutable: cfg.REMOTION_BROWSER_EXECUTABLE ?? null,
         maxDurationInSeconds: cfg.MAX_RENDER_SECONDS,

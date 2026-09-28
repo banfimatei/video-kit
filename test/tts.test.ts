@@ -3,7 +3,15 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, w
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { audioDuration, createSynthesizer, pcmToWav, pickTtsProvider, splitForTts, voiceNarration } from "../src/node/tts.js";
+import {
+  audioDuration,
+  createSynthesizer,
+  pcmToWav,
+  pickTtsProvider,
+  splitForTts,
+  voiceNarration,
+  withTtsOptions,
+} from "../src/node/tts.js";
 
 const hasEspeak = spawnSync("espeak-ng", ["--version"]).status === 0;
 const dirs: string[] = [];
@@ -280,6 +288,31 @@ describe("voiceNarration", () => {
     const err = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k" }, (async () =>
       Response.json({ err_msg: "Invalid credentials." }, { status: 401 })) as unknown as typeof fetch);
     await expect(err.synthesize("x")).rejects.toThrow(/Deepgram TTS 401/);
+  });
+
+  it("sends flux-* Deepgram models to Flux TTS on /v2/speak", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      seen.push(url);
+      return new Response(Buffer.from([0xff, 0xf3, 1]), { headers: { "Content-Type": "audio/mpeg" } });
+    }) as unknown as typeof fetch;
+    const flux = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "flux-hannah-en" }, fetchImpl);
+    await flux.synthesize("Hello.");
+    expect(seen[0]).toBe("https://api.deepgram.com/v2/speak?model=flux-hannah-en&encoding=mp3");
+    expect(flux.voice).toBe("flux-hannah-en");
+  });
+
+  it("overrides a provider's model and voice for one call, without touching the env", () => {
+    const env = { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "aura-2-thalia-en" };
+    const dg = withTtsOptions("deepgram", env, { voice: "flux-miles-en" });
+    expect(dg.DEEPGRAM_TTS_MODEL).toBe("flux-miles-en");
+    expect(env.DEEPGRAM_TTS_MODEL).toBe("aura-2-thalia-en");
+    expect(createSynthesizer("deepgram", dg, fetch).voice).toBe("flux-miles-en");
+    const or = withTtsOptions("openrouter", { OPENROUTER_API_KEY: "k" }, { model: "google/gemini-3.8-flash-tts", voice: "Kore" });
+    expect(or).toMatchObject({ OPENROUTER_TTS_MODEL: "google/gemini-3.8-flash-tts", OPENROUTER_TTS_VOICE: "Kore" });
+    expect(withTtsOptions("openai", env, null)).toBe(env);
+    expect(() => withTtsOptions("espeak", {}, { model: "x" })).toThrow(/no model option/);
+    expect(() => withTtsOptions("deepgram", env, { voice: "bad voice; rm" })).toThrow(/Invalid TTS voice/);
   });
 
   it("splits text at sentence ends, then spaces", () => {

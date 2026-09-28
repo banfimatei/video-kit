@@ -17,6 +17,12 @@ export interface RenderRequest {
   props?: Record<string, unknown>;
   /** TTS provider for `props.narration` (elevenlabs | openai | gemini | deepgram | openrouter | espeak | none); default: whichever key the service has. */
   tts?: string;
+  /**
+   * Model and/or voice for this render, over the service's defaults for the
+   * provider: e.g. `{ voice: "flux-hannah-en" }` or `{ voice: "aura-2-apollo-en" }`
+   * (Deepgram), `{ model: "google/gemini-3.8-flash-tts", voice: "Kore" }` (OpenRouter).
+   */
+  ttsOptions?: { model?: string; voice?: string };
   /** "video" (default, mp4) or "still" (png of `frame`). */
   kind?: RenderKind;
   /** Frame for a still. */

@@ -7,13 +7,14 @@
  *   elevenlabs  ELEVENLABS_API_KEY  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
- *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL]
+ *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL: aura-2-* voices, or flux-* for Flux TTS]
  *   openrouter  OPENROUTER_API_KEY  [OPENROUTER_TTS_MODEL, OPENROUTER_TTS_VOICE, OPENROUTER_TTS_INSTRUCTIONS]
  *   espeak      espeak-ng on PATH, no key: robotic, for offline tests and CI only
  *   none        no voice
  *
  * Files are named by a hash of provider, voice and text, so voicing the same
- * line again is free.
+ * line again is free. `withTtsOptions` swaps the model or voice for one call
+ * (a render request's `ttsOptions`) without touching the environment.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -46,6 +47,41 @@ export function pickTtsProvider(requested?: string | null, env: Env = process.en
   if (env.DEEPGRAM_API_KEY) return "deepgram";
   if (env.OPENROUTER_API_KEY) return "openrouter";
   return null;
+}
+
+/** A model and/or voice for one render, overriding the provider's env defaults. */
+export interface TtsOptions {
+  model?: string;
+  voice?: string;
+}
+
+/** Which env var holds each provider's model and voice. Deepgram names both with one model string. */
+const OPTION_VARS: Record<TtsProvider, { model?: string; voice?: string }> = {
+  elevenlabs: { model: "ELEVENLABS_MODEL", voice: "ELEVENLABS_VOICE_ID" },
+  openai: { model: "OPENAI_TTS_MODEL", voice: "OPENAI_TTS_VOICE" },
+  gemini: { model: "GEMINI_TTS_MODEL", voice: "GEMINI_TTS_VOICE" },
+  deepgram: { model: "DEEPGRAM_TTS_MODEL", voice: "DEEPGRAM_TTS_MODEL" },
+  openrouter: { model: "OPENROUTER_TTS_MODEL", voice: "OPENROUTER_TTS_VOICE" },
+  espeak: { voice: "ESPEAK_VOICE" },
+};
+
+/** Model and voice names: slugs like "aura-2-apollo-en", "google/gemini-3.8-flash-tts", "Charon". */
+export const TTS_OPTION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/;
+
+/** `env` with `options` applied as the provider's model/voice vars. For Deepgram the voice wins (it is the model). */
+export function withTtsOptions(provider: TtsProvider, env: Env, options?: TtsOptions | null): Env {
+  if (!options) return env;
+  const vars = OPTION_VARS[provider];
+  const out = { ...env };
+  for (const key of ["model", "voice"] as const) {
+    const value = options[key];
+    if (value === undefined) continue;
+    if (!TTS_OPTION_PATTERN.test(value)) throw new Error(`Invalid TTS ${key} "${value}".`);
+    const name = vars[key];
+    if (!name) throw new Error(`The ${provider} voice has no ${key} option.`);
+    out[name] = value;
+  }
+  return out;
 }
 
 export interface Synthesizer {
@@ -259,20 +295,22 @@ export function createSynthesizer(
       };
     }
     case "deepgram": {
-      // Aura-2: the model and the voice are one name, aura-2-<voice>-<lang> (thalia, apollo, draco…).
+      // The model and the voice are one name: aura-2-<voice>-<lang> (thalia, apollo, draco…) on /v1/speak,
+      // or flux-<voice>-<lang> (Flux TTS: hannah, miles, alexis…) on /v2/speak. Same request shape.
       const key = required(env, "DEEPGRAM_API_KEY");
       const model = env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
+      const version = model.startsWith("flux-") ? "v2" : "v1";
       return {
         voice: model,
         ext: "mp3",
         synthesize: async (text, signal) => {
-          // Aura takes at most 2000 characters a request; longer lines go in sentence-sized parts,
+          // Aura takes at most 2000 characters a request (Flux: assume the same); longer lines go in sentence-sized parts,
           // and mp3 frames simply concatenate.
           const parts: Buffer[] = [];
           for (const chunk of splitForTts(text, 1900)) {
             const res = await post(
               fetchImpl,
-              `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mp3`,
+              `https://api.deepgram.com/${version}/speak?model=${encodeURIComponent(model)}&encoding=mp3`,
               {
                 method: "POST",
                 headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },

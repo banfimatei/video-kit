@@ -199,6 +199,7 @@ await renderComposition({
   inputProps: { narration: { intro: "Hello.", main: "Here's the thing." } },
   output: "out/my-video.mp4",
   tts: "elevenlabs", // or openai | gemini | deepgram | openrouter | espeak | none; default: whichever key is set
+  ttsOptions: { voice: "flux-hannah-en" }, // optional: model and/or voice for this render, over the env defaults
 });
 ```
 
@@ -213,7 +214,7 @@ assets, for validating props in Node. Scene ids must be unique
 | `elevenlabs` | `ELEVENLABS_API_KEY` | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_INSTRUCTIONS` |
 | `gemini` | `GEMINI_API_KEY` | `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE` |
-| `deepgram` | `DEEPGRAM_API_KEY` | `DEEPGRAM_TTS_MODEL`: an Aura-2 voice, which names model and voice together (default `aura-2-thalia-en`; e.g. `aura-2-apollo-en`, `aura-2-draco-en`, `aura-2-agustina-es`). Lines over 2000 characters are split at sentences. |
+| `deepgram` | `DEEPGRAM_API_KEY` | `DEEPGRAM_TTS_MODEL`: an Aura-2 voice, which names model and voice together (default `aura-2-thalia-en`; e.g. `aura-2-apollo-en`, `aura-2-draco-en`, `aura-2-agustina-es`), or a Flux TTS voice `flux-<voice>-<lang>` (e.g. `flux-hannah-en`, `flux-miles-en`), sent to `/v2/speak`. Lines over 2000 characters are split at sentences. |
 | `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `google/gemini-3.8-flash-tts`; also Voxtral, Kokoro, MiniMax, Deepgram… — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `Charon`; voices are per model, listed as `supported_voices` in `GET /api/v1/models?output_modalities=speech`), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only), `OPENROUTER_TTS_FORMAT` (`pcm`, wrapped as WAV, or `mp3`; default pcm, mp3 for Mistral) |
 | `espeak` | `espeak-ng` installed | Robotic: offline tests and CI |
 
