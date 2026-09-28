@@ -7,6 +7,7 @@
  *   elevenlabs  ELEVENLABS_API_KEY  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
+ *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL]
  *   openrouter  OPENROUTER_API_KEY  [OPENROUTER_TTS_MODEL, OPENROUTER_TTS_VOICE, OPENROUTER_TTS_INSTRUCTIONS]
  *   espeak      espeak-ng on PATH, no key: robotic, for offline tests and CI only
  *   none        no voice
@@ -25,7 +26,7 @@ import type { Narration, VoiceClip, Voiceover } from "../schema.js";
 
 const execFileAsync = promisify(execFile);
 
-export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "openrouter", "espeak"] as const;
+export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "deepgram", "openrouter", "espeak"] as const;
 export type TtsProvider = (typeof TTS_PROVIDERS)[number];
 type Env = Record<string, string | undefined>;
 
@@ -42,6 +43,7 @@ export function pickTtsProvider(requested?: string | null, env: Env = process.en
   if (env.ELEVENLABS_API_KEY) return "elevenlabs";
   if (env.OPENAI_API_KEY) return "openai";
   if (env.GEMINI_API_KEY) return "gemini";
+  if (env.DEEPGRAM_API_KEY) return "deepgram";
   if (env.OPENROUTER_API_KEY) return "openrouter";
   return null;
 }
@@ -91,6 +93,22 @@ export function pcmToWav(pcm: Buffer, rate: number, channels = 1): Buffer {
   head.write("data", 36);
   head.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([head, pcm]);
+}
+
+/** Split text into parts of at most `max` characters, at sentence ends, then spaces, then anywhere. */
+export function splitForTts(text: string, max: number): string[] {
+  const parts: string[] = [];
+  let rest = text.trim();
+  while (rest.length > max) {
+    const window = rest.slice(0, max);
+    let cut = Math.max(window.lastIndexOf(". "), window.lastIndexOf("! "), window.lastIndexOf("? "));
+    cut = cut > max / 2 ? cut + 1 : window.lastIndexOf(" ");
+    if (cut <= 0) cut = max;
+    parts.push(rest.slice(0, cut).trim());
+    rest = rest.slice(cut).trim();
+  }
+  if (rest) parts.push(rest);
+  return parts;
 }
 
 export function createSynthesizer(
@@ -237,6 +255,35 @@ export function createSynthesizer(
           const rate = Number(/rate=(\d+)/.exec(type)?.[1] ?? 24000);
           const channels = Number(/channels=(\d+)/.exec(type)?.[1] ?? 1);
           return pcmToWav(audio, rate, channels);
+        },
+      };
+    }
+    case "deepgram": {
+      // Aura-2: the model and the voice are one name, aura-2-<voice>-<lang> (thalia, apollo, draco…).
+      const key = required(env, "DEEPGRAM_API_KEY");
+      const model = env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
+      return {
+        voice: model,
+        ext: "mp3",
+        synthesize: async (text, signal) => {
+          // Aura takes at most 2000 characters a request; longer lines go in sentence-sized parts,
+          // and mp3 frames simply concatenate.
+          const parts: Buffer[] = [];
+          for (const chunk of splitForTts(text, 1900)) {
+            const res = await post(
+              fetchImpl,
+              `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mp3`,
+              {
+                method: "POST",
+                headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
+                body: JSON.stringify({ text: chunk }),
+              },
+              "Deepgram",
+              signal,
+            );
+            parts.push(Buffer.from(await res.arrayBuffer()));
+          }
+          return Buffer.concat(parts);
         },
       };
     }

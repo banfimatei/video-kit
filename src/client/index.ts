@@ -15,7 +15,7 @@ export interface RenderRequest {
   site?: string;
   composition: string;
   props?: Record<string, unknown>;
-  /** TTS provider for `props.narration` (elevenlabs | openai | gemini | openrouter | espeak | none); default: whichever key the service has. */
+  /** TTS provider for `props.narration` (elevenlabs | openai | gemini | deepgram | openrouter | espeak | none); default: whichever key the service has. */
   tts?: string;
   /** "video" (default, mp4) or "still" (png of `frame`). */
   kind?: RenderKind;
