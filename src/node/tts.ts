@@ -15,6 +15,9 @@
  * Files are named by a hash of provider, voice and text, so voicing the same
  * line again is free. `withTtsOptions` swaps the model or voice for one call
  * (a render request's `ttsOptions`) without touching the environment.
+ *
+ * Each clip also gets word timings (words.ts): aligned by Deepgram
+ * speech-to-text when DEEPGRAM_API_KEY is set (whatever voiced it), else estimated.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -24,6 +27,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { ALL_FORMATS, FilePathSource, Input } from "mediabunny";
 import type { Narration, VoiceClip, Voiceover } from "../schema.js";
+import { wordsForClip } from "./words.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -375,6 +379,14 @@ export interface VoiceNarrationOptions {
   synthesizer?: Synthesizer;
   /** Stop between clips and cancel the one in flight. */
   signal?: AbortSignal;
+  /**
+   * Time each clip's words with Deepgram speech-to-text (cached next to the
+   * clip). Default: on when DEEPGRAM_API_KEY is set; otherwise, and whenever
+   * alignment fails, words are estimated. false also ignores cached alignments.
+   */
+  alignWords?: boolean;
+  /** Something worth knowing that didn't stop the voicing (a failed alignment). Default console.warn. */
+  onWarning?: (message: string) => void;
 }
 
 /**
@@ -438,10 +450,17 @@ async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Prom
   }
 }
 
-/** Voice every non-empty line of `narration`; lines already on disk are reused. Keys are kept. */
+/**
+ * Voice every non-empty line of `narration`; lines already on disk are reused. Keys are kept.
+ * Each clip carries its word timings (see words.ts).
+ */
 export async function voiceNarration(narration: Narration, opts: VoiceNarrationOptions): Promise<Voiceover> {
   const tts = opts.synthesizer ?? createSynthesizer(opts.provider, opts.env, opts.fetchImpl);
   const toSrc = opts.toSrc ?? ((file: string) => `voiceover/${file}`);
+  const env = opts.env ?? process.env;
+  const warn = opts.onWarning ?? ((message: string) => console.warn(`[video-kit] ${message}`));
+  const align = opts.alignWords !== false && Boolean(env.DEEPGRAM_API_KEY);
+  if (opts.alignWords && !env.DEEPGRAM_API_KEY) warn("alignWords needs DEEPGRAM_API_KEY; word timings will be estimated.");
   await mkdir(opts.dir, { recursive: true });
 
   const out: Voiceover = {};
@@ -456,7 +475,17 @@ export async function voiceNarration(narration: Narration, opts: VoiceNarrationO
     const name = `${hash}.${tts.ext}`;
     const file = path.join(opts.dir, name);
     const seconds = await ensureClip(file, () => tts.synthesize(clean, opts.signal));
-    const clip: VoiceClip = { src: toSrc(name), durationInSeconds: seconds };
+    const { words, wordTiming } = await wordsForClip(clean, {
+      file,
+      seconds,
+      cached: opts.alignWords !== false,
+      align,
+      env,
+      fetchImpl: opts.fetchImpl,
+      signal: opts.signal,
+      warn: (message) => warn(`voiceover "${scene}": ${message}`),
+    });
+    const clip: VoiceClip = { src: toSrc(name), durationInSeconds: seconds, words, wordTiming };
     out[scene] = clip;
   }
   return out;

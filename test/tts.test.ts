@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   audioDuration,
   createSynthesizer,
@@ -20,7 +20,13 @@ const tmp = () => {
   dirs.push(d);
   return d;
 };
-afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true })));
+// voiceNarration aligns words whenever DEEPGRAM_API_KEY is set; a developer's real key must not
+// send these clips to Deepgram (test/words.test.ts covers alignment with a fake).
+beforeEach(() => vi.stubEnv("DEEPGRAM_API_KEY", undefined));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
+});
 
 /** `seconds` of silence as 16-bit mono PCM at 16 kHz. */
 const silence = (seconds: number) => pcmToWav(Buffer.alloc(Math.round(seconds * 16000) * 2), 16000);

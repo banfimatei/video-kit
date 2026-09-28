@@ -48,6 +48,11 @@ export interface RenderCompositionOptions {
    * `serveUrl`, pass a directory and an http URL builder.
    */
   voice?: { dir: string; toSrc: (file: string) => string };
+  /**
+   * Word timings on each clip: aligned by Deepgram speech-to-text (default
+   * when DEEPGRAM_API_KEY is set), else estimated. false always estimates.
+   */
+  alignWords?: boolean;
   browserExecutable?: string | null;
   /** Refuse compositions longer than this (after calculateMetadata). */
   maxDurationInSeconds?: number;
@@ -109,6 +114,7 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
         dir: voice.dir,
         toSrc: voice.toSrc,
         env: withTtsOptions(provider, env, opts.ttsOptions),
+        alignWords: opts.alignWords,
         signal,
       });
       props = (opts.withVoiceover ?? ((p, v) => ({ ...p, voiceover: v })))(props, voiceover);

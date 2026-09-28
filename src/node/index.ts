@@ -14,6 +14,17 @@ export {
   type VoiceNarrationOptions,
 } from "./tts.js";
 export {
+  alignToTranscript,
+  alignWords,
+  DEEPGRAM_LISTEN_URL,
+  estimateWords,
+  scriptTokens,
+  wordKey,
+  type AlignWordsOptions,
+  type SttWord,
+} from "./words.js";
+export type { VoiceWord, WordTiming } from "../schema.js";
+export {
   renderComposition,
   type RenderCompositionOptions,
   type RenderCompositionResult,

@@ -1,9 +1,28 @@
 import { z } from "zod";
 
+/** When one word of a voice line is spoken: seconds from the start of its clip's audio. */
+export const voiceWordSchema = z.object({
+  text: z.string().min(1),
+  start: z.number().nonnegative(),
+  end: z.number().nonnegative(),
+});
+export type VoiceWord = z.infer<typeof voiceWordSchema>;
+
+/** Where a clip's word timings came from: speech-to-text alignment, or its length spread by spoken length. */
+export const wordTimingSchema = z.enum(["aligned", "estimated"]);
+export type WordTiming = z.infer<typeof wordTimingSchema>;
+
 /** One rendered voice line: a URL (or a path under the project's public/) and its measured length. */
 export const voiceClipSchema = z.object({
   src: z.string().min(1),
   durationInSeconds: z.number().positive(),
+  /**
+   * One entry per token of the line (`text.trim().split(/\s+/)`), in order,
+   * spelled as in the script with punctuation ("Alphabet," "2,110"), so a
+   * composition can find the word where a name is spoken.
+   */
+  words: z.array(voiceWordSchema).optional(),
+  wordTiming: wordTimingSchema.optional(),
 });
 export type VoiceClip = z.infer<typeof voiceClipSchema>;
 

@@ -221,6 +221,44 @@ assets, for validating props in Node. Scene ids must be unique
 Clips are cached by a hash of provider, voice and text, so re-rendering the
 same script costs nothing.
 
+### Word timings
+
+Every clip in `voiceover` also says when each of its words is spoken:
+
+```json
+{ "src": "voiceover/3f9c….mp3", "durationInSeconds": 4.82, "wordTiming": "aligned",
+  "words": [{ "text": "Alphabet,", "start": 0.18, "end": 0.71 }, { "text": "2,110", "start": 0.8, "end": 1.62 }, …] }
+```
+
+`words` has one entry per token of the line (`text.trim().split(/\s+/)`), in
+order, spelled as in the script with its punctuation, so a composition can
+find the word where a name is said, caption word by word or cue on a word.
+Times are seconds from the start of that clip (add the scene's voice start
+for video time); they never go backwards and stay within the clip.
+
+- `aligned`: when `DEEPGRAM_API_KEY` is set (whichever voice made the clip),
+  the clip goes once to Deepgram speech-to-text (nova-3, `smart_format`) and
+  what it heard is matched back to the script. Dropped or extra words,
+  "2,110" against "2110", "&" against "and", "zortix.com" against "zortix dot
+  com" and small mishearings only cost the word concerned. The result is
+  cached next to the clip as `<clip>.words.json`, so re-renders don't pay
+  again. Cost: Deepgram's nova-3 pre-recorded rate per audio minute (around
+  half a cent a minute at pay-as-you-go list price; check deepgram.com/pricing),
+  so well under a cent for a 60-second short, once per line.
+- `estimated`: no key, `alignWords: false`, or the alignment failed (HTTP
+  error, bad response, timeout, a transcript matching fewer than half the
+  words). The clip's length is spread over the words by how long each takes
+  to say (a number as its words, so "2,110" gets "two thousand one hundred
+  ten"'s share), with short pauses after commas and full stops and a sliver of
+  silence at both ends. Good to a word or so. A failed alignment logs a
+  warning and never fails the render; it isn't cached, so the next render
+  tries again.
+
+`alignWords: false` on `renderComposition` or `voiceNarration` always
+estimates. The render service aligns whenever it has `DEEPGRAM_API_KEY`.
+`estimateWords`, `alignWords` and `alignToTranscript` are exported from
+`@banfimatei/video-kit/node`.
+
 ## Deploying the service (Railway)
 
 The repo deploys as one Railway service built from the root `Dockerfile`
@@ -235,7 +273,7 @@ new services, so these are service settings:
 | Draining | the **variable** `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300` (not the Settings field: the service reads the variable to know its window, and logs it at boot) |
 | Start Command | leave empty. A start command replaces the image's entrypoint (`dumb-init`), and then renders can't drain on redeploy |
 | Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile`, `/.dockerignore` (docs-only commits don't restart it) |
-| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`) |
+| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`); `DEEPGRAM_API_KEY` for aligned word timings (without it the service estimates them, whatever key the caller has) |
 | Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 
 Everything else has defaults: see [`service/.env.example`](service/.env.example).
