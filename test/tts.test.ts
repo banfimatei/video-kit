@@ -282,6 +282,34 @@ describe("voiceNarration", () => {
     await expect(err.synthesize("x")).rejects.toThrow(/Deepgram TTS 401/);
   });
 
+  it("speaks Flux voices through /v2/speak, with their speed and expressivity", async () => {
+    const seen: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      seen.push(url);
+      return new Response(Buffer.from([0xff, 0xf3]), { headers: { "Content-Type": "audio/mpeg" } });
+    }) as unknown as typeof fetch;
+    const alexis = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "flux-alexis-en" }, fetchImpl);
+    await alexis.synthesize("Introducing Zortix.");
+    expect(seen[0]).toBe("https://api.deepgram.com/v2/speak?model=flux-alexis-en&encoding=mp3");
+    expect(alexis.voice).toBe("flux-alexis-en");
+
+    const tuned = createSynthesizer(
+      "deepgram",
+      { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "flux-alexis-en", DEEPGRAM_TTS_SPEED: "1.05", DEEPGRAM_TTS_EXPRESSIVITY: "1" },
+      fetchImpl,
+    );
+    await tuned.synthesize("Introducing Zortix.");
+    expect(seen[1]).toBe("https://api.deepgram.com/v2/speak?model=flux-alexis-en&encoding=mp3&speed=1.05&expressivity=1");
+    // Tuning changes the audio, so it is part of the cache key.
+    expect(tuned.voice).toBe("flux-alexis-en/speed=1.05/expressivity=1");
+
+    // Aura-2 has neither setting and stays on /v1.
+    const aura = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_SPEED: "1.05" }, fetchImpl);
+    await aura.synthesize("x");
+    expect(seen[2]).toBe("https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3");
+    expect(aura.voice).toBe("aura-2-thalia-en");
+  });
+
   it("splits text at sentence ends, then spaces", () => {
     expect(splitForTts("Short.", 100)).toEqual(["Short."]);
     const parts = splitForTts("One two three. Four five six. Seven eight nine.", 30);

@@ -7,7 +7,7 @@
  *   elevenlabs  ELEVENLABS_API_KEY  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
- *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL]
+ *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL (Aura-2 or Flux), DEEPGRAM_TTS_SPEED, DEEPGRAM_TTS_EXPRESSIVITY (Flux only)]
  *   openrouter  OPENROUTER_API_KEY  [OPENROUTER_TTS_MODEL, OPENROUTER_TTS_VOICE, OPENROUTER_TTS_INSTRUCTIONS]
  *   espeak      espeak-ng on PATH, no key: robotic, for offline tests and CI only
  *   none        no voice
@@ -259,20 +259,28 @@ export function createSynthesizer(
       };
     }
     case "deepgram": {
-      // Aura-2: the model and the voice are one name, aura-2-<voice>-<lang> (thalia, apollo, draco…).
+      // The model names the voice too. Aura-2 (aura-2-<voice>-<lang>: thalia, apollo, draco…) is served
+      // by /v1/speak; Flux TTS (flux-<voice>-<lang>: alexis, haley…) only by /v2/speak, which also
+      // takes a speed (0.85–1.15) and an expressivity (-2 to 2).
       const key = required(env, "DEEPGRAM_API_KEY");
       const model = env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
+      const flux = model.startsWith("flux-");
+      const query = new URLSearchParams({ model, encoding: "mp3" });
+      if (flux && env.DEEPGRAM_TTS_SPEED) query.set("speed", env.DEEPGRAM_TTS_SPEED);
+      if (flux && env.DEEPGRAM_TTS_EXPRESSIVITY) query.set("expressivity", env.DEEPGRAM_TTS_EXPRESSIVITY);
+      const tuning = [...query.entries()].filter(([k]) => k === "speed" || k === "expressivity");
+      const url = `https://api.deepgram.com/${flux ? "v2" : "v1"}/speak?${query}`;
       return {
-        voice: model,
+        voice: [model, ...tuning.map(([k, v]) => `${k}=${v}`)].join("/"),
         ext: "mp3",
         synthesize: async (text, signal) => {
-          // Aura takes at most 2000 characters a request; longer lines go in sentence-sized parts,
+          // At most 2000 characters a request; longer lines go in sentence-sized parts,
           // and mp3 frames simply concatenate.
           const parts: Buffer[] = [];
           for (const chunk of splitForTts(text, 1900)) {
             const res = await post(
               fetchImpl,
-              `https://api.deepgram.com/v1/speak?model=${encodeURIComponent(model)}&encoding=mp3`,
+              url,
               {
                 method: "POST",
                 headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
