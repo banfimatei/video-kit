@@ -5,7 +5,7 @@ import type { RenderKind, RenderRequest } from "@banfimatei/video-kit/client";
 import { Hono, type Context } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { z } from "zod";
-import { TTS_OPTION_PATTERN } from "@banfimatei/video-kit/node";
+import { MUSIC_PROMPT_MAX, TTS_OPTION_PATTERN } from "@banfimatei/video-kit/node";
 import { bearerToken, safeEqual, verifySignedPath } from "./auth.js";
 import type { Config } from "./config.js";
 import { contentDisposition, fileResponse } from "./files.js";
@@ -27,6 +27,12 @@ const renderRequestSchema = z.object({
       voice: z.string().regex(TTS_OPTION_PATTERN, "not a voice name").optional(),
     })
     .strict()
+    .optional(),
+  music: z
+    .union([
+      z.literal("elevenlabs"),
+      z.object({ provider: z.literal("elevenlabs"), prompt: z.string().max(MUSIC_PROMPT_MAX).optional() }).strict(),
+    ])
     .optional(),
   kind: z.enum(["video", "still"]).default("video"),
   frame: z.number().int().min(0).optional(),

@@ -9,6 +9,7 @@ export interface StoredJob extends RenderJob {
   props?: Record<string, unknown>;
   tts?: string;
   ttsOptions?: { model?: string; voice?: string };
+  music?: { provider: "elevenlabs"; prompt?: string };
   frame?: number;
   poster?: number | false;
   webhookUrl?: string;
@@ -78,6 +79,7 @@ export class JobStore {
       props: req.props ?? {},
       tts: req.tts,
       ttsOptions: req.ttsOptions,
+      music: typeof req.music === "string" ? { provider: req.music } : req.music,
       frame: req.frame,
       poster: req.poster,
       webhookUrl: req.webhookUrl,
@@ -163,6 +165,7 @@ export function publicJob(job: StoredJob, position?: number): RenderJob {
     props: _p,
     tts: _t,
     ttsOptions: _to,
+    music: _m,
     frame: _f,
     poster: _po,
     webhookUrl: _w,

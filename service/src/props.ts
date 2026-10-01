@@ -7,8 +7,9 @@ import { BUILTIN_TEMPLATES } from "./templates.js";
 /**
  * Check and clean a render's props at submit time, so bad input is a 400 and
  * the job stores only what it will render:
- * - `voiceover` is dropped: the service voices `narration` itself, and a
- *   client-supplied clip URL would have headless Chrome fetch anything.
+ * - `voiceover` and `musicTrack` are dropped: the service voices `narration`
+ *   and composes music itself, and a
+ *   client-supplied URL would have headless Chrome fetch anything.
  * - built-in templates parse their props (defaults applied, unknown keys
  *   gone), and every remote URL in them must be on a public host.
  * - narration is capped (MAX_NARRATION_LINES, MAX_NARRATION_CHARS), since
@@ -23,7 +24,7 @@ export async function checkProps(
   raw: Record<string, unknown>,
   kind: "video" | "still" = "video",
 ): Promise<Record<string, unknown>> {
-  const { voiceover: _dropped, ...rest } = raw;
+  const { voiceover: _dropped, musicTrack: _track, ...rest } = raw;
   let props: Record<string, unknown> = rest;
 
   const template = site === BUILTIN ? BUILTIN_TEMPLATES[composition] : undefined;

@@ -211,7 +211,7 @@ assets, for validating props in Node. Scene ids must be unique
 
 | `tts` | Needs | Tuning |
 | --- | --- | --- |
-| `elevenlabs` | `ELEVENLABS_API_KEY` | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
+| `elevenlabs` | `ELEVENLABS_API_KEY` (or `ELEVENLABS_KEY`) | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_INSTRUCTIONS` |
 | `gemini` | `GEMINI_API_KEY` | `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE` |
 | `deepgram` | `DEEPGRAM_API_KEY` | `DEEPGRAM_TTS_MODEL`: an Aura-2 voice, which names model and voice together (default `aura-2-thalia-en`; e.g. `aura-2-apollo-en`, `aura-2-draco-en`, `aura-2-agustina-es`), or a Flux TTS voice `flux-<voice>-<lang>` (e.g. `flux-hannah-en`, `flux-miles-en`), sent to `/v2/speak`. Lines over 2000 characters are split at sentences. |
@@ -220,6 +220,18 @@ assets, for validating props in Node. Scene ids must be unique
 
 Clips are cached by a hash of provider, voice and text, so re-rendering the
 same script costs nothing.
+
+### Music
+
+A render request's `music: "elevenlabs"` (or `{ provider: "elevenlabs", prompt }`)
+composes an instrumental bed with ElevenLabs Music, a second longer than the
+video once its length is known, and passes it to the composition as
+`props.musicTrack` (`{ src, durationInSeconds, provider }`). The composition
+decides how to play it (level, ducking, fades); a composition that ignores the
+prop renders as before. Same key as the voice; `ELEVENLABS_MUSIC_MODEL`
+overrides `music_v1`. Tracks are cached by prompt and length. With
+`renderComposition`, pass `music` together with `voice` (the length is only
+known after bundling).
 
 ### Word timings
 
@@ -273,7 +285,7 @@ new services, so these are service settings:
 | Draining | the **variable** `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300` (not the Settings field: the service reads the variable to know its window, and logs it at boot) |
 | Start Command | leave empty. A start command replaces the image's entrypoint (`dumb-init`), and then renders can't drain on redeploy |
 | Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile`, `/.dockerignore` (docs-only commits don't restart it) |
-| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`); `DEEPGRAM_API_KEY` for aligned word timings (without it the service estimates them, whatever key the caller has) |
+| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, which music also uses, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`); `DEEPGRAM_API_KEY` for aligned word timings (without it the service estimates them, whatever key the caller has) |
 | Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 
 Everything else has defaults: see [`service/.env.example`](service/.env.example).

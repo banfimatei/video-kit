@@ -13,10 +13,10 @@ import { BUILTIN_TEMPLATES } from "./templates.js";
 /**
  * The props a job renders with. Submit already cleaned them (props.ts); this
  * repeats the cheap, idempotent part so a job stored by another version of
- * the service can't skip it: no client voiceover, built-in props prepared.
+ * the service can't skip it: no client voiceover or musicTrack, built-in props prepared.
  */
 export function renderProps(job: StoredJob): Record<string, unknown> {
-  const { voiceover: _dropped, ...props } = job.props ?? {};
+  const { voiceover: _dropped, musicTrack: _track, ...props } = job.props ?? {};
   const template = job.site === BUILTIN ? BUILTIN_TEMPLATES[job.composition] : undefined;
   return template ? template.prepare(props) : props;
 }
@@ -146,6 +146,7 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
         poster: still || job.poster === false ? false : { frame: job.poster ?? 60 },
         tts: job.tts,
         ttsOptions: job.ttsOptions,
+        music: job.music ?? null,
         voice: { dir: cfg.voiceDir, toSrc: (file) => `${cfg.internalUrl}/internal/voice/${file}` },
         browserExecutable: cfg.REMOTION_BROWSER_EXECUTABLE ?? null,
         maxDurationInSeconds: cfg.MAX_RENDER_SECONDS,
@@ -176,6 +177,7 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
           fps: result.fps,
           durationInSeconds: result.durationInSeconds,
           voice: result.voice,
+          music: result.music,
           expiresAt: "",
         },
       });

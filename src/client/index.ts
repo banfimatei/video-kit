@@ -23,6 +23,13 @@ export interface RenderRequest {
    * (Deepgram), `{ model: "google/gemini-3.8-flash-tts", voice: "Kore" }` (OpenRouter).
    */
   ttsOptions?: { model?: string; voice?: string };
+  /**
+   * A music bed composed to the video's length and passed to the composition
+   * as `props.musicTrack` ({ src, durationInSeconds, provider }); the
+   * composition decides how to play it. `"elevenlabs"` uses the service's
+   * default prompt; `{ provider, prompt }` brings its own. Videos only.
+   */
+  music?: "elevenlabs" | { provider: "elevenlabs"; prompt?: string };
   /** "video" (default, mp4) or "still" (png of `frame`). */
   kind?: RenderKind;
   /** Frame for a still. */
@@ -47,6 +54,8 @@ export interface RenderResult {
   durationInSeconds: number;
   /** The TTS provider that voiced the narration, if any. */
   voice: string | null;
+  /** The provider that composed the music bed, if any. */
+  music?: string | null;
   /** When the signed URLs stop working. */
   expiresAt: string;
 }

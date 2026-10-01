@@ -4,7 +4,7 @@
  * <VoiceTrack> read.
  *
  * Providers, picked by name or else by whichever key is set, in this order:
- *   elevenlabs  ELEVENLABS_API_KEY  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
+ *   elevenlabs  ELEVENLABS_API_KEY (or ELEVENLABS_KEY)  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
  *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL: aura-2-* voices, or flux-* for Flux TTS]
@@ -45,7 +45,7 @@ export function pickTtsProvider(requested?: string | null, env: Env = process.en
     }
     return want as TtsProvider;
   }
-  if (env.ELEVENLABS_API_KEY) return "elevenlabs";
+  if (elevenLabsKey(env)) return "elevenlabs";
   if (env.OPENAI_API_KEY) return "openai";
   if (env.GEMINI_API_KEY) return "gemini";
   if (env.DEEPGRAM_API_KEY) return "deepgram";
@@ -93,6 +93,11 @@ export interface Synthesizer {
   voice: string;
   ext: "mp3" | "wav";
   synthesize(text: string, signal?: AbortSignal): Promise<Buffer>;
+}
+
+/** The ElevenLabs key: ELEVENLABS_API_KEY, or ELEVENLABS_KEY as some deployments name it. */
+export function elevenLabsKey(env: Env): string | undefined {
+  return env.ELEVENLABS_API_KEY || env.ELEVENLABS_KEY || undefined;
 }
 
 function required(env: Env, name: string): string {
@@ -158,7 +163,8 @@ export function createSynthesizer(
 ): Synthesizer {
   switch (provider) {
     case "elevenlabs": {
-      const key = required(env, "ELEVENLABS_API_KEY");
+      const key = elevenLabsKey(env);
+      if (!key) throw new Error("ELEVENLABS_API_KEY is not set.");
       const voiceId = env.ELEVENLABS_VOICE_ID || "JBFqnCBsd6RMkjVDRZzb";
       const model = env.ELEVENLABS_MODEL || "eleven_multilingual_v2";
       return {
@@ -408,7 +414,7 @@ async function playableSeconds(file: string): Promise<number | null> {
  * and a bad file already in the cache is replaced rather than failing every
  * render that needs the line.
  */
-async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Promise<number> {
+export async function ensureClip(file: string, synthesize: () => Promise<Buffer>): Promise<number> {
   if (existsSync(file)) {
     const seconds = await playableSeconds(file);
     if (seconds !== null) {

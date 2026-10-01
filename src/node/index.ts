@@ -3,6 +3,7 @@ export {
   TTS_PROVIDERS,
   audioDuration,
   createSynthesizer,
+  elevenLabsKey,
   pcmToWav,
   pickTtsProvider,
   TTS_OPTION_PATTERN,
@@ -30,4 +31,14 @@ export {
   type RenderCompositionResult,
   type RenderStage,
 } from "./render.js";
+export {
+  composeMusic,
+  DEFAULT_MUSIC_PROMPT,
+  MUSIC_PROMPT_MAX,
+  MUSIC_PROVIDERS,
+  type ComposeMusicOptions,
+  type MusicProvider,
+  type MusicRequest,
+  type MusicTrack,
+} from "./music.js";
 export { bundleSite, packSite } from "./site.js";
