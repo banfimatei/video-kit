@@ -7,6 +7,7 @@
  *   video-kit sites
  *   video-kit site deploy <name> [--entry src/index.ts] [--public public] [--bundle dir] [--rspack]
  *   video-kit render <composition> [--site name] [--props file.json] [--tts provider]
+ *                    [--music] [--music-prompt text] [--poster frame|false]
  *                    [--still frame] [--out file.mp4]
  *                    [--local [--entry src/index.ts | --bundle dir] [--public public] [--rspack]]
  *
@@ -20,7 +21,7 @@ import { renderComposition } from "./render.js";
 import { bundleSite, packSite } from "./site.js";
 
 /** Flags that never take a value. */
-const SWITCHES = new Set(["local", "rspack", "help"]);
+const SWITCHES = new Set(["local", "rspack", "help", "music"]);
 
 const flags = new Map<string, string>();
 const positional: string[] = [];
@@ -47,6 +48,22 @@ function stillFrame(): number | undefined {
   if (v === undefined) return undefined;
   if (!/^\d+$/.test(v)) throw new Error(`--still needs a frame number (a non-negative integer), not "${v}".`);
   return Number(v);
+}
+
+/** --music (ElevenLabs, the default prompt) and an optional --music-prompt. */
+function musicRequest(): { provider: "elevenlabs"; prompt?: string } | undefined {
+  const prompt = flag("music-prompt");
+  if (flag("music") !== "true" && prompt === undefined) return undefined;
+  return { provider: "elevenlabs", ...(prompt ? { prompt } : {}) };
+}
+
+/** --poster <frame>, or --poster false to skip it. Absent keeps the renderer's default. */
+function posterOption(): { frame: number } | false | undefined {
+  const v = flag("poster");
+  if (v === undefined) return undefined;
+  if (v === "false" || v === "none") return false;
+  if (!/^\d+$/.test(v)) throw new Error(`--poster needs a frame number or false, not "${v}".`);
+  return { frame: Number(v) };
 }
 
 function client() {
@@ -88,6 +105,8 @@ async function main(): Promise<void> {
   } else if (cmd === "render" && sub) {
     const props = flag("props") ? JSON.parse(readFileSync(flag("props")!, "utf8")) : {};
     const still = stillFrame();
+    const poster = posterOption();
+    const music = musicRequest();
     const out = flag("out") ?? (still !== undefined ? `${sub}.png` : `${sub}.mp4`);
     if (flag("local")) {
       const bundleDir = flag("bundle");
@@ -103,6 +122,8 @@ async function main(): Promise<void> {
         inputProps: props,
         output: out,
         still: still !== undefined ? { frame: still } : undefined,
+        ...(poster !== undefined ? { poster } : {}),
+        ...(music ? { music } : {}),
         tts: flag("tts"),
         rspack: flag("rspack") === "true",
         onProgress: (stage, p) => process.stderr.write(`\r${stage} ${Math.round(p * 100)}%   `),
@@ -112,7 +133,16 @@ async function main(): Promise<void> {
     }
     const kit = client();
     const job = await kit.renderAndWait(
-      { site: flag("site"), composition: sub, props, tts: flag("tts"), kind: still !== undefined ? "still" : "video", frame: still },
+      {
+        site: flag("site"),
+        composition: sub,
+        props,
+        tts: flag("tts"),
+        kind: still !== undefined ? "still" : "video",
+        frame: still,
+        ...(poster !== undefined ? { poster: poster === false ? false : poster.frame } : {}),
+        ...(music ? { music } : {}),
+      },
       { onProgress: progressLine },
     );
     writeFileSync(out, await kit.download(job));

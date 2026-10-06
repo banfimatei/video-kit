@@ -9,6 +9,7 @@ import path from "node:path";
 import type { WebpackOverrideFn } from "@remotion/bundler";
 import type { Narration, Voiceover } from "../schema.js";
 import { composeMusic, type MusicProvider, type MusicRequest } from "./music.js";
+import { bakePosterFrame } from "./poster.js";
 import { pickTtsProvider, voiceNarration, withTtsOptions, type TtsOptions, type TtsProvider } from "./tts.js";
 
 type Props = Record<string, unknown>;
@@ -51,9 +52,10 @@ export interface RenderCompositionOptions {
   voice?: { dir: string; toSrc: (file: string) => string };
   /**
    * Compose a music bed to the composition's length (music.ts) and pass it as
-   * the `musicTrack` prop ({ src, durationInSeconds, provider }). Written to
-   * `voice.dir` and reached through `voice.toSrc`, so it needs `voice`: the
-   * length is only known after the bundle, too late for public/. Videos only.
+   * the `musicTrack` prop, including its beat grid. Written to `voice.dir`
+   * and reached through `voice.toSrc`. With an entry point and no `voice`,
+   * the file is written into the bundle's public/ after the length is known.
+   * A remote serveUrl still needs `voice`. Videos only.
    */
   music?: MusicRequest | null;
   /**
@@ -164,19 +166,25 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
 
   let music: MusicProvider | null = null;
   if (opts.music && !opts.still) {
-    if (!opts.voice) throw new Error("renderComposition: music needs `voice` (a dir and an http URL builder).");
+    // The bundle serves public/ at /public, which is where staticFile() looks.
+    const voice =
+      opts.voice ??
+      (serveUrl && !/^https?:\/\//i.test(serveUrl)
+        ? { dir: path.join(serveUrl, "public", "voiceover"), toSrc: (file: string) => `voiceover/${file}` }
+        : null);
+    if (!voice) throw new Error("renderComposition: music for a remote serveUrl needs `voice` (a dir and an http URL builder).");
     checkpoint();
     progress("composing", 0);
     const track = await composeMusic({
       request: opts.music,
       seconds,
-      dir: opts.voice.dir,
-      toSrc: opts.voice.toSrc,
+      dir: voice.dir,
+      toSrc: voice.toSrc,
       env,
       signal,
     });
     props = { ...props, musicTrack: track };
-    music = track.provider;
+    music = opts.music.provider;
     progress("composing", 1);
   }
 
@@ -229,6 +237,8 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
         imageFormat: "png",
         cancelSignal: cancel,
       });
+      checkpoint();
+      await bakePosterFrame(output, poster, signal);
       progress("poster", 1);
     }
   }

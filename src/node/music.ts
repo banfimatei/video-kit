@@ -7,11 +7,16 @@
  *
  * Tracks are named by a hash of provider, model, prompt and length, so the
  * same bed at the same length is composed once. Written, measured and only
- * then trusted, like voice clips (ensureClip).
+ * then trusted, like voice clips (ensureClip). Each bed also carries a beat
+ * grid (tempo, beats, strongCues) so a composition can nudge a picture onto
+ * the pulse. A bed with no readable pulse carries an empty grid.
  */
 import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
+import type { MusicTrack } from "../schema.js";
+import { analyzeBeats } from "../timing/beats.js";
+import { readMonoPcm } from "./pcm.js";
 import { elevenLabsKey, ensureClip } from "./tts.js";
 
 type Env = Record<string, string | undefined>;
@@ -25,12 +30,7 @@ export interface MusicRequest {
   prompt?: string;
 }
 
-/** The composed track as the composition receives it (the `musicTrack` prop). */
-export interface MusicTrack {
-  src: string;
-  durationInSeconds: number;
-  provider: MusicProvider;
-}
+export type { MusicTrack };
 
 /** A bed for a calm, news-style explainer: steady, even, out of the voice's way. */
 export const DEFAULT_MUSIC_PROMPT =
@@ -82,5 +82,22 @@ export async function composeMusic(opts: ComposeMusicOptions): Promise<MusicTrac
     }
     return Buffer.from(await res.arrayBuffer());
   });
-  return { src: opts.toSrc(file), durationInSeconds, provider: opts.request.provider };
+  const filePath = path.join(opts.dir, file);
+  // A bed with no readable pulse still plays; the composition keeps its own timing.
+  let tempo: MusicTrack["tempo"] = null;
+  let beats: MusicTrack["beats"] = [];
+  let strongCues: MusicTrack["strongCues"] = [];
+  try {
+    const pcm = await readMonoPcm(filePath);
+    if (pcm) {
+      const cues = analyzeBeats(pcm.samples, pcm.sampleRate);
+      tempo = cues.tempo;
+      beats = cues.beats;
+      strongCues = cues.strongCues;
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
+    console.warn(`video-kit: music has no beat grid (${message}).`);
+  }
+  return { src: opts.toSrc(file), durationInSeconds, provider: opts.request.provider, tempo, beats, strongCues };
 }

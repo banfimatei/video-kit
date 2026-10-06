@@ -1,9 +1,13 @@
 import * as remotionSfx from "@remotion/sfx";
 import { staticFile } from "remotion";
 import type { HouseSound } from "../schema.js";
+import bell from "../../assets/sfx/bell.wav";
 import chime from "../../assets/sfx/chime.wav";
+import click from "../../assets/sfx/click.wav";
+import key from "../../assets/sfx/key.wav";
 import page from "../../assets/sfx/page.wav";
 import riser from "../../assets/sfx/riser.wav";
+import soft from "../../assets/sfx/soft.wav";
 import thud from "../../assets/sfx/thud.wav";
 import tick from "../../assets/sfx/tick.wav";
 import whoosh from "../../assets/sfx/whoosh.wav";
@@ -13,7 +17,10 @@ import whoosh from "../../assets/sfx/whoosh.wav";
  * They ship inside this package and the Remotion bundler emits them with the
  * project, so they play with no network and carry no licence.
  */
-export const HOUSE_SFX = { tick, whoosh, thud, chime, riser, page } as const satisfies Record<HouseSound, string>;
+export const HOUSE_SFX = { tick, whoosh, thud, chime, riser, page, click, key, soft, bell } as const satisfies Record<
+  HouseSound,
+  string
+>;
 export type HouseSfx = keyof typeof HOUSE_SFX;
 export const HOUSE_SFX_NAMES = Object.keys(HOUSE_SFX) as HouseSfx[];
 
@@ -22,7 +29,7 @@ export const REMOTION_SFX: Readonly<Record<string, string>> = { ...remotionSfx }
 
 /**
  * Turn a sound reference into something <Audio> can play:
- * - a house cue: "tick", "whoosh", "thud", "chime", "riser", "page"
+ * - a house cue: "tick", "whoosh", "thud", "chime", "riser", "page", "click", "key", "soft", "bell"
  * - an @remotion/sfx name: "remotion:vineBoom"
  * - an http(s) URL
  * - a path under the project's public/: "sfx/boom.wav"
