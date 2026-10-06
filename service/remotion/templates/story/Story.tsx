@@ -1,4 +1,4 @@
-import { SfxCues, VoiceTrack, type SfxCue } from "@banfimatei/video-kit";
+import { MusicBed, nudgeToBeat, nudgeToStrongCue, own, SfxCues, VoiceTrack, type MusicTrack, type SfxCue } from "@banfimatei/video-kit";
 import { linearTiming, TransitionSeries } from "@remotion/transitions";
 import { fade } from "@remotion/transitions/fade";
 import { AbsoluteFill, useVideoConfig } from "remotion";
@@ -6,14 +6,24 @@ import { storyFrame } from "./layout";
 import { Chrome, Scene } from "./Scene";
 import { sceneId, STORY_TRANSITION, storySchema, storyTimeline, type StoryProps } from "./schema";
 
-/** Quiet cues on the beats: a tick as each title lands, a whoosh through each crossfade, a chime on the last scene. */
-function houseCues(ids: string[], fps: number): SfxCue[] {
+/**
+ * Quiet cues: a tick as each title lands, a whoosh through each crossfade, a
+ * chime on the last scene. With a music bed, a tick may slide onto a beat and
+ * a whoosh or chime onto a strong cue, and only when it is already close.
+ */
+function houseCues(ids: string[], fps: number, starts: Record<string, number | null>, track: MusicTrack | null | undefined): SfxCue[] {
+  const align = (scene: string, at: number, kind: "beat" | "strong") => {
+    if (!track) return at;
+    const start = (own(starts, scene) ?? 0) / fps;
+    const nudged = kind === "beat" ? nudgeToBeat(start + at, track.beats) : nudgeToStrongCue(start + at, track.strongCues);
+    return Math.max(0, nudged - start);
+  };
   const cues: SfxCue[] = [];
   ids.forEach((id, i) => {
-    cues.push({ sound: "tick", scene: id, at: (i === 0 ? 8 : 16) / fps, volume: 0.22 });
-    if (i > 0) cues.push({ sound: "whoosh", scene: id, at: 0, volume: 0.22 });
+    cues.push({ sound: "tick", scene: id, at: align(id, (i === 0 ? 8 : 16) / fps, "beat"), volume: 0.22 });
+    if (i > 0) cues.push({ sound: "whoosh", scene: id, at: align(id, 0, "strong"), volume: 0.22 });
   });
-  if (ids.length > 1) cues.push({ sound: "chime", scene: ids[ids.length - 1], at: 30 / fps, volume: 0.25 });
+  if (ids.length > 1) cues.push({ sound: "chime", scene: ids[ids.length - 1], at: align(ids[ids.length - 1], 30 / fps, "strong"), volume: 0.25 });
   return cues;
 }
 
@@ -47,8 +57,9 @@ export const Story: React.FC<StoryProps> = (raw) => {
       </TransitionSeries>
       <Chrome props={props} layout={layout} />
       <VoiceTrack voiceover={props.voiceover} starts={t.voiceStarts} />
+      <MusicBed track={props.musicTrack} volume={0.2} duckTo={0.1} voiceover={props.voiceover} voiceStarts={t.voiceStarts} />
       {props.soundDesign === "none" ? null : (
-        <SfxCues cues={houseCues(ids, fps)} starts={t.starts} label="House" leadFrames={(c) => (c.sound === "whoosh" ? 4 : 0)} />
+        <SfxCues cues={houseCues(ids, fps, t.starts, props.musicTrack)} starts={t.starts} label="House" leadFrames={(c) => (c.sound === "whoosh" ? 4 : 0)} />
       )}
       <SfxCues cues={props.sfx} starts={t.starts} />
     </AbsoluteFill>

@@ -38,15 +38,42 @@ export type Narration = z.infer<typeof narrationSchema>;
 export const voiceoverSchema = z.record(z.string(), voiceClipSchema.nullable());
 export type Voiceover = z.infer<typeof voiceoverSchema>;
 
-/** The house cues shipped in assets/sfx (see resolveSound). */
-export const HOUSE_SOUNDS = ["tick", "whoosh", "thud", "chime", "riser", "page"] as const;
+/**
+ * The house cues shipped in assets/sfx (see resolveSound).
+ * `click`, `key` and `soft` are dull enough to repeat; `bell` and `chime`
+ * are one payoff, not a tick track. `page` and `riser` are the brightest.
+ */
+export const HOUSE_SOUNDS = ["tick", "whoosh", "thud", "chime", "riser", "page", "click", "key", "soft", "bell"] as const;
 export type HouseSound = (typeof HOUSE_SOUNDS)[number];
+
+/** One point on a music bed's beat grid. `time` is seconds from the start of the bed. */
+export const musicCueSchema = z.object({
+  time: z.number().nonnegative(),
+  intensity: z.number().min(0).max(1),
+});
+export type MusicCue = z.infer<typeof musicCueSchema>;
+
+/**
+ * The bed a render composes and passes as `musicTrack`. `beats` is the pulse;
+ * `strongCues` are the few loud ones. Both may be empty (silence, or a bed
+ * with no readable pulse), in which case a composition keeps its own timing.
+ */
+export const musicTrackSchema = z.object({
+  src: z.string().min(1),
+  durationInSeconds: z.number().positive(),
+  provider: z.string().min(1),
+  tempo: z.number().positive().nullable(),
+  beats: z.array(musicCueSchema),
+  strongCues: z.array(musicCueSchema),
+});
+export type MusicTrack = z.infer<typeof musicTrackSchema>;
 
 /**
  * A sound placed on the timeline. `sound` is anything resolveSound() takes:
- * a house cue ("tick", "whoosh", "thud", "chime", "riser", "page"), an
- * @remotion/sfx name ("remotion:vineBoom"), an http(s) URL, or a path under
- * public/. `at` is seconds from the start of `scene`, or of the video.
+ * a house cue ("tick", "whoosh", "thud", "chime", "riser", "page", "click",
+ * "key", "soft", "bell"), an @remotion/sfx name ("remotion:vineBoom"), an
+ * http(s) URL, or a path under public/. `at` is seconds from the start of
+ * `scene`, or of the video.
  */
 export const sfxCueSchema = z.object({
   sound: z.string().min(1),
@@ -67,5 +94,10 @@ export const audioPropsSchema = z.object({
   /** "house" lays the composition's built-in cues; "none" leaves voice and `sfx` only. */
   soundDesign: z.enum(["house", "none"]).optional(),
   sfx: z.array(sfxCueSchema).optional(),
+  /**
+   * The bed the renderer composed for this video. A client-sent value is
+   * dropped: the service writes this itself. Null when the render has no music.
+   */
+  musicTrack: musicTrackSchema.nullable().optional(),
 });
 export type AudioProps = z.infer<typeof audioPropsSchema>;

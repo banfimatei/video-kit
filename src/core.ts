@@ -3,6 +3,15 @@
  * they load in Node (to validate or prepare props) and in a Remotion bundle.
  */
 export {
+  analyzeBeats,
+  BEAT_WINDOW,
+  nudgeToBeat,
+  nudgeToCue,
+  nudgeToStrongCue,
+  STRONG_CUE_WINDOW,
+  type BeatAnalysis,
+} from "./timing/beats.js";
+export {
   fitScenesToVoice,
   own,
   type FitOptions,
@@ -12,12 +21,16 @@ export {
 export {
   audioPropsSchema,
   HOUSE_SOUNDS,
+  musicCueSchema,
+  musicTrackSchema,
   narrationSchema,
   sfxCueSchema,
   voiceClipSchema,
   voiceoverSchema,
   type AudioProps,
   type HouseSound,
+  type MusicCue,
+  type MusicTrack,
   type Narration,
   type SfxCue,
   type VoiceClip,
