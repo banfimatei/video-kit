@@ -34,6 +34,12 @@ export interface RenderRequest {
   kind?: RenderKind;
   /** Frame for a still. */
   frame?: number;
+  /**
+   * For a still of a built-in template: the id of the scene to show (its
+   * middle frame, on the voiced timeline), instead of `frame`. Scene ids are
+   * the scenes' own `id`s, or `s0`, `s1`, … by position.
+   */
+  scene?: string;
   /** Poster frame for a video, or false for none. Default 60. */
   poster?: number | false;
   /**

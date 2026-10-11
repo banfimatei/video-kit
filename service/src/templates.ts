@@ -1,5 +1,13 @@
 import { z } from "zod";
-import { prepareStoryProps, storyMinSeconds, storySchema, storyUrls } from "../remotion/templates/story/schema.js";
+import {
+  prepareStoryProps,
+  sceneId,
+  storyMinSeconds,
+  storySceneFrame,
+  storySchema,
+  storyUrls,
+  type ParsedStoryProps,
+} from "../remotion/templates/story/schema.js";
 
 export interface BuiltinTemplate {
   schema: z.ZodType;
@@ -9,6 +17,13 @@ export interface BuiltinTemplate {
   urls: (props: Record<string, unknown>) => string[];
   /** The video's length before voice stretches it, so an over-long request is a 400 before any TTS is paid for. */
   minSeconds: (props: Record<string, unknown>) => number;
+  /** The ids a still may name with `scene`, in order. */
+  sceneIds: (props: Record<string, unknown>) => string[];
+  /**
+   * The frame a still of `scene` shows, on the timeline of `props` as they
+   * are rendered (voiceover included); undefined for an unknown id.
+   */
+  sceneFrame: (props: Record<string, unknown>, scene: string) => number | undefined;
 }
 
 /**
@@ -23,6 +38,8 @@ export const BUILTIN_TEMPLATES: Record<string, BuiltinTemplate> = {
     prepare: (p) => prepareStoryProps(p) as Record<string, unknown>,
     urls: (p) => storyUrls(p as never),
     minSeconds: (p) => storyMinSeconds(p as never),
+    sceneIds: (p) => (p as ParsedStoryProps).scenes.map((s, i) => sceneId(s, i)),
+    sceneFrame: (p, scene) => storySceneFrame(p as never, scene),
   },
 };
 

@@ -14,7 +14,7 @@ import { assertPublicUrl, ResolveError, UnsafeTargetError } from "./net.js";
 import { checkProps } from "./props.js";
 import type { Runner } from "./runner.js";
 import { BUILTIN, HttpError, type Sites } from "./sites.js";
-import { builtinJsonSchema } from "./templates.js";
+import { BUILTIN_TEMPLATES, builtinJsonSchema } from "./templates.js";
 
 const renderRequestSchema = z.object({
   site: z.string().min(1).max(63).default(BUILTIN),
@@ -36,6 +36,7 @@ const renderRequestSchema = z.object({
     .optional(),
   kind: z.enum(["video", "still"]).default("video"),
   frame: z.number().int().min(0).optional(),
+  scene: z.string().regex(/^[A-Za-z0-9_-]{1,40}$/, "not a scene id").optional(),
   poster: z.union([z.number().int().min(0), z.literal(false)]).optional(),
   webhookUrl: z
     .string()
@@ -44,6 +45,16 @@ const renderRequestSchema = z.object({
     .refine((u) => /^https?:\/\//i.test(u), "webhookUrl must be http(s)")
     .optional(),
 });
+
+/** `scene` names the scene a still shows; only built-in templates know their scenes. */
+function checkScene(req: { site: string; composition: string; kind: RenderKind; frame?: number; scene?: string }, props: Record<string, unknown>) {
+  if (req.kind !== "still") throw new HttpError(400, "scene is for stills (kind: \"still\").");
+  if (req.frame !== undefined) throw new HttpError(400, "Give a still either frame or scene, not both.");
+  const template = req.site === BUILTIN ? BUILTIN_TEMPLATES[req.composition] : undefined;
+  if (!template) throw new HttpError(400, "scene stills are for the built-in templates; give frame for this composition.");
+  const ids = template.sceneIds(props);
+  if (!ids.includes(req.scene!)) throw new HttpError(400, `No scene "${req.scene}". Scenes: ${ids.join(", ")}.`);
+}
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "::ffff:127.0.0.1"]);
 const VOICE_FILE = /^[0-9a-f]{24}\.(wav|mp3)$/;
@@ -170,6 +181,7 @@ export function createApp({ cfg, store, queue, sites, runner, version, draining 
     }
     // Validated and cleaned now, so bad props are a 400 rather than a failed job.
     const props = await checkProps(cfg, req.site, req.composition, req.props, req.kind);
+    if (req.scene !== undefined) checkScene(req, props);
     const serveDir = await sites.serveDir(req.site);
     // No await from here to push(): the capacity check and the enqueue happen together.
     if (queue.isFull()) throw new HttpError(429, "The render queue is full. Try again shortly.");

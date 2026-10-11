@@ -54,8 +54,21 @@ const mp4 = await kit.download(job); // Uint8Array
 ```
 
 Or the CLI, once the library is installed (`npm install github:banfimatei/video-kit`):
-`npx video-kit render Story --props props.json --out story.mp4`. Without
-installing: `npx -p github:banfimatei/video-kit video-kit render …`.
+`npx video-kit render Story --props props.json --out story.mp4`, with
+`--tts`, `--voice`, `--model` and `--music` for the sound, `--scene s1` or
+`--still <frame>` for a PNG instead, and `renders` / `cancel <id>` for the
+queue. Without installing: `npx -p github:banfimatei/video-kit video-kit render …`.
+
+### Make videos with Claude Code
+
+The quickest way to use all of this is to point Claude Code at this repo:
+the `make-video` skill in `.claude/skills/` teaches it the Story template,
+the preview loop (scene stills with `--tts none`, looked at before the
+render) and the voices, so "make a 40 second vertical about X" turns into
+props, stills, an mp4 and a signed link. Give the session `VIDEO_KIT_URL`
+and `VIDEO_KIT_API_KEY` (a root `.env`, gitignored, or the environment's
+secrets in a cloud session, where the service's domain must also be allowed).
+It runs on a Claude subscription like any Claude Code session.
 
 The client only needs `fetch`: Remotion, React and zod are optional peers, so
 a project that only calls the service installs none of them.
@@ -68,7 +81,7 @@ All `/v1` routes need `Authorization: Bearer <RENDER_API_KEY>`.
 | --- | --- |
 | `GET /healthz` | Liveness, version and queue size (no auth). `503` while the service drains for a restart. |
 | `GET /v1/templates[?site=name]` | Compositions you can render, with sizes, default props and (for built-ins) the JSON Schema of their props. |
-| `POST /v1/renders` | Queue a render. Body: `composition`, `props`, and optionally `site` (default `builtin`), `tts`, `kind` (`video` or `still`), `frame`, `poster` (frame or `false`), `webhookUrl`. Returns `202` and the job; `400` with the bad fields for invalid input, `429` when the queue is full, `503` while restarting. |
+| `POST /v1/renders` | Queue a render. Body: `composition`, `props`, and optionally `site` (default `builtin`), `tts`, `ttsOptions`, `music`, `kind` (`video` or `still`), `frame` or, for a still of a built-in template, `scene` (the id of the scene to show, at its middle frame on the voiced timeline), `poster` (frame or `false`), `webhookUrl`. Returns `202` and the job; `400` with the bad fields for invalid input, `429` when the queue is full, `503` while restarting. |
 | `GET /v1/renders/:id` | The job: `status` (`queued`, `running`, `done`, `failed`, `canceled`), `stage`, `progress`, `position` while queued, `error`, and when done `result` with signed `videoUrl` / `posterUrl` / `stillUrl` and `expiresAt`. Every read signs fresh links, valid until `URL_TTL_HOURS` from now or the render's deletion, whichever is first. |
 | `GET /v1/renders` | The 50 most recent jobs. |
 | `DELETE /v1/renders/:id` | Cancel a queued or running render (at any stage: voicing, rendering, poster); on a finished one, delete it and its files. |

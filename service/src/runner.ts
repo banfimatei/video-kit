@@ -21,6 +21,16 @@ export function renderProps(job: StoredJob): Record<string, unknown> {
   return template ? template.prepare(props) : props;
 }
 
+/** A still's frame: the one asked for, or the middle of the named scene once the props are voiced. */
+function stillFrame(job: StoredJob): number | ((props: Record<string, unknown>) => number) {
+  const template = job.site === BUILTIN ? BUILTIN_TEMPLATES[job.composition] : undefined;
+  if (job.scene !== undefined && template) {
+    const scene = job.scene;
+    return (props) => template.sceneFrame(props, scene) ?? 0;
+  }
+  return job.frame ?? 0;
+}
+
 export interface Runner {
   run(id: string, signal: AbortSignal): Promise<void>;
   view(job: StoredJob, position?: number): RenderJob;
@@ -142,7 +152,7 @@ export function createRunner(cfg: Config, store: JobStore, log: (msg: string) =>
         compositionId: job.composition,
         inputProps: renderProps(job),
         output: path.join(dir, still ? "still.png" : "video.mp4"),
-        still: still ? { frame: job.frame ?? 0 } : undefined,
+        still: still ? { frame: stillFrame(job) } : undefined,
         poster: still || job.poster === false ? false : { frame: job.poster ?? 60 },
         tts: job.tts,
         ttsOptions: job.ttsOptions,

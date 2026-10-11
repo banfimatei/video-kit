@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx video-kit:*)",
+      "Bash(set -a; . ./.env; set +a; npx video-kit:*)"
+    ]
+  }
+}

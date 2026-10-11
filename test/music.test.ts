@@ -20,7 +20,7 @@ describe("composeMusic", () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.push({ url, init });
-      return new Response(silence(2));
+      return new Response(new Uint8Array(silence(2)));
     }) as unknown as typeof fetch;
     const dir = tmp();
     const opts = {
@@ -54,7 +54,7 @@ describe("composeMusic", () => {
     let body: Record<string, unknown> = {};
     const fetchImpl = (async (_url: string, init: RequestInit) => {
       body = JSON.parse(String(init.body));
-      return new Response(silence(1));
+      return new Response(new Uint8Array(silence(1)));
     }) as unknown as typeof fetch;
     await composeMusic({
       request: { provider: "elevenlabs", prompt: "  solo piano  " },

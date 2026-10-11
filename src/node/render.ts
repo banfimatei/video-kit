@@ -31,8 +31,12 @@ export interface RenderCompositionOptions {
   inputProps: Props;
   /** Output file: .mp4 for a video, .png for a still. */
   output: string;
-  /** Render one frame as PNG instead of a video. */
-  still?: { frame: number };
+  /**
+   * Render one frame as PNG instead of a video. `frame` may be a function of
+   * the props as rendered (voiceover included), for a frame that depends on
+   * the voiced timeline, like the middle of a scene.
+   */
+  still?: { frame: number | ((props: Props) => number) };
   /** Also write `<output stem>.poster.png` at this frame (videos only). Default frame 60, clamped; false for none. */
   poster?: { frame: number } | false;
   /** TTS provider, "none", or undefined to pick by whichever key is set. */
@@ -187,7 +191,8 @@ export async function renderComposition(opts: RenderCompositionOptions): Promise
 
   let poster: string | null = null;
   if (opts.still) {
-    const frame = Math.min(Math.max(0, Math.round(opts.still.frame)), composition.durationInFrames - 1);
+    const want = typeof opts.still.frame === "function" ? opts.still.frame(props) : opts.still.frame;
+    const frame = Math.min(Math.max(0, Math.round(want) || 0), composition.durationInFrames - 1);
     progress("rendering", 0);
     await renderStill({
       composition,

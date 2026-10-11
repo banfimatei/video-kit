@@ -6,9 +6,18 @@
  *   video-kit templates [--site name]
  *   video-kit sites
  *   video-kit site deploy <name> [--entry src/index.ts] [--public public] [--bundle dir] [--rspack]
- *   video-kit render <composition> [--site name] [--props file.json] [--tts provider]
- *                    [--still frame] [--out file.mp4]
+ *   video-kit render <composition> [--site name] [--props file.json] [--out file.mp4]
+ *                    [--tts provider] [--voice name] [--model name] [--music elevenlabs|"<prompt>"]
+ *                    [--still frame | --scene id]
  *                    [--local [--entry src/index.ts | --bundle dir] [--public public] [--rspack]]
+ *   video-kit renders                     the service's recent jobs
+ *   video-kit cancel <id>                 cancel a queued or running render (delete a finished one)
+ *
+ * render prints the finished job's result (signed video/poster/still links)
+ * as JSON on stdout and writes the file to --out (<composition>.mp4, or .png
+ * for a still). --scene renders a still of that scene's middle frame, on the
+ * voiced timeline (built-in templates; ids are the scenes' `id`s or s0, s1, …).
+ * --tts none skips the voice, for quick layout checks.
  *
  * Flags take `--name value` or `--name=value`. remotion.config.ts is not read:
  * if your bundle depends on it, run `npx remotion bundle` and pass --bundle build.
@@ -49,6 +58,20 @@ function stillFrame(): number | undefined {
   return Number(v);
 }
 
+/** --voice and --model as the request's ttsOptions, or undefined when neither is given. */
+function ttsOptions(): { model?: string; voice?: string } | undefined {
+  const model = flag("model");
+  const voice = flag("voice");
+  return model === undefined && voice === undefined ? undefined : { model, voice };
+}
+
+/** --music: "elevenlabs" for the default bed, anything else is the prompt. */
+function music(): "elevenlabs" | { provider: "elevenlabs"; prompt: string } | undefined {
+  const v = flag("music");
+  if (v === undefined) return undefined;
+  return v === "elevenlabs" ? "elevenlabs" : { provider: "elevenlabs", prompt: v };
+}
+
 function client() {
   const baseUrl = process.env.VIDEO_KIT_URL;
   const apiKey = process.env.VIDEO_KIT_API_KEY;
@@ -85,11 +108,20 @@ async function main(): Promise<void> {
     const tarball = await packSite(dir);
     console.error(`Uploading ${(tarball.length / 1e6).toFixed(1)} MB as site "${arg}"…`);
     console.log(JSON.stringify(await client().deploySite(arg, tarball), null, 2));
+  } else if (cmd === "renders") {
+    console.log(JSON.stringify(await client().list(), null, 2));
+  } else if (cmd === "cancel" && sub) {
+    console.log(JSON.stringify(await client().cancel(sub), null, 2));
   } else if (cmd === "render" && sub) {
     const props = flag("props") ? JSON.parse(readFileSync(flag("props")!, "utf8")) : {};
     const still = stillFrame();
-    const out = flag("out") ?? (still !== undefined ? `${sub}.png` : `${sub}.mp4`);
+    const scene = flag("scene");
+    if (still !== undefined && scene !== undefined) throw new Error("Give --still or --scene, not both.");
+    const isStill = still !== undefined || scene !== undefined;
+    const out = flag("out") ?? (isStill ? `${sub}.png` : `${sub}.mp4`);
     if (flag("local")) {
+      if (scene !== undefined) throw new Error("--scene needs the service (it knows the template's scenes); use --still <frame> locally.");
+      if (flag("music") !== undefined) throw new Error("--music needs the service; locally, pass `music` to renderComposition.");
       const bundleDir = flag("bundle");
       const result = await renderComposition({
         ...(bundleDir
@@ -104,6 +136,7 @@ async function main(): Promise<void> {
         output: out,
         still: still !== undefined ? { frame: still } : undefined,
         tts: flag("tts"),
+        ttsOptions: ttsOptions(),
         rspack: flag("rspack") === "true",
         onProgress: (stage, p) => process.stderr.write(`\r${stage} ${Math.round(p * 100)}%   `),
       });
@@ -112,12 +145,22 @@ async function main(): Promise<void> {
     }
     const kit = client();
     const job = await kit.renderAndWait(
-      { site: flag("site"), composition: sub, props, tts: flag("tts"), kind: still !== undefined ? "still" : "video", frame: still },
+      {
+        site: flag("site"),
+        composition: sub,
+        props,
+        tts: flag("tts"),
+        ttsOptions: ttsOptions(),
+        music: music(),
+        kind: isStill ? "still" : "video",
+        frame: still,
+        scene,
+      },
       { onProgress: progressLine },
     );
     writeFileSync(out, await kit.download(job));
     console.error(`\nWrote ${out} (${job.result?.durationInSeconds.toFixed(1)}s, voice: ${job.result?.voice ?? "none"})`);
-    console.log(JSON.stringify(job.result, null, 2));
+    console.log(JSON.stringify({ id: job.id, ...job.result }, null, 2));
   } else {
     usage();
     process.exitCode = 2;

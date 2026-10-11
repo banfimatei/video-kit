@@ -1,4 +1,4 @@
-import { audioPropsSchema, fitScenesToVoice, HOUSE_SOUNDS, sfxCueSchema } from "@banfimatei/video-kit/core";
+import { audioPropsSchema, fitScenesToVoice, HOUSE_SOUNDS, own, sfxCueSchema } from "@banfimatei/video-kit/core";
 import * as remotionSfx from "@remotion/sfx";
 import { z } from "zod";
 
@@ -168,6 +168,19 @@ export function storyTimeline(props: Pick<StoryProps, "scenes" | "voiceover">, f
     props.scenes.map((s, i) => ({ id: sceneId(s, i), frames: Math.round(sceneSeconds(s) * fps) })),
     { fps, voiceover: props.voiceover, transitionFrames: STORY_TRANSITION },
   );
+}
+
+/**
+ * The middle frame of a scene, on the timeline of the props as given (voiced
+ * when they carry a voiceover), or undefined for an id that isn't a scene's.
+ * A still there shows the scene with its type landed and its line underway.
+ */
+export function storySceneFrame(props: Pick<StoryProps, "scenes" | "voiceover">, scene: string): number | undefined {
+  const t = storyTimeline(props);
+  const start = own(t.starts, scene);
+  const length = own(t.durations, scene);
+  if (start === undefined || start === null || !length) return undefined;
+  return start + Math.floor(length / 2);
 }
 
 /** The video's length before any voice stretches it: a floor the service checks at submit. */

@@ -16,6 +16,9 @@ service (`service/`, npm workspace, deployed on Railway). Usage and API: [README
   files, atomic writes), runner and webhooks (`runner.ts`), request checks
   (`props.ts`, `net.ts`), sites, retention.
 - `service/remotion/` — built-in templates, bundled to `service/bundle` at build time.
+- `.claude/skills/make-video/` — the skill for *using* the service from a
+  Claude Code session (script, stills, render). This file is for developing
+  it; keep usage guidance there, not here.
 
 ## Rules
 
@@ -38,6 +41,10 @@ service (`service/`, npm workspace, deployed on Railway). Usage and API: [README
   key of `STORY_SAMPLE_PROPS` explicitly (`null`, `""`, `{}`), or the sample
   brand and footer end up in clients' videos. Keep that true for new keys and
   new templates.
+- A still may name a `scene` instead of a `frame`; the template resolves it
+  (`sceneFrame`) inside the render, once the narration is voiced, because
+  scene starts move with the voice. New templates implement `sceneIds` and
+  `sceneFrame` too.
 - Anything a template makes headless Chrome fetch goes through its `urls()`,
   so the service can refuse private hosts. The service owns `voiceover`; one
   sent by a client is dropped. Webhooks go through `net.ts` (public hosts

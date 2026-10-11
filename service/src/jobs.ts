@@ -11,6 +11,8 @@ export interface StoredJob extends RenderJob {
   ttsOptions?: { model?: string; voice?: string };
   music?: { provider: "elevenlabs"; prompt?: string };
   frame?: number;
+  /** A still of this scene of a built-in template (its frame is found once the narration is voiced). */
+  scene?: string;
   poster?: number | false;
   webhookUrl?: string;
   /** Site version directory captured at submit time, so a redeploy can't swap files mid-render. */
@@ -81,6 +83,7 @@ export class JobStore {
       ttsOptions: req.ttsOptions,
       music: typeof req.music === "string" ? { provider: req.music } : req.music,
       frame: req.frame,
+      scene: req.scene,
       poster: req.poster,
       webhookUrl: req.webhookUrl,
       ...extra,
@@ -167,6 +170,7 @@ export function publicJob(job: StoredJob, position?: number): RenderJob {
     ttsOptions: _to,
     music: _m,
     frame: _f,
+    scene: _sc,
     poster: _po,
     webhookUrl: _w,
     webhookPending: _wp,

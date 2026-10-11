@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { STORY_SAMPLE_PROPS } from "../remotion/templates/story/defaults.js";
 import { sceneType, storyFrame, wrapLines } from "../remotion/templates/story/layout.js";
-import { ASPECTS, prepareStoryProps, storySchema } from "../remotion/templates/story/schema.js";
-import { setup, type Ctx } from "./helpers.js";
+import { ASPECTS, prepareStoryProps, storySceneFrame, storySchema } from "../remotion/templates/story/schema.js";
+import { auth, setup, type Ctx } from "./helpers.js";
 
 let t: Ctx;
 
@@ -57,6 +57,26 @@ describe("Story props, round two", () => {
     const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
     expect((await t.post({ composition: "Story", props: { scenes: [{ title: "a", image: png }] } })).status).toBe(202);
     expect((await t.post({ composition: "Story", props: { scenes: [{ title: "a", image: "data:image/svg+xml;base64,PHN2Zz4=" }] } })).status).toBe(400);
+  });
+
+  it("takes a scene for a still, and names the scenes when the id is unknown", async () => {
+    t = await setup();
+    const props = { scenes: [{ title: "a" }, { id: "cta", title: "b" }] };
+    const post = (body: object) => t.post({ composition: "Story", kind: "still", props, ...body });
+    const ok = await post({ scene: "cta" });
+    expect(ok.status).toBe(202);
+    const job = t.store.get(((await ok.json()) as { id: string }).id)!;
+    expect(job.scene).toBe("cta");
+    expect(JSON.stringify(await t.call(`/v1/renders/${job.id}`, { headers: auth }).then((r) => r.json()))).not.toContain('"scene"');
+    const missing = await post({ scene: "s1" });
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { error: string }).error).toContain("s0, cta");
+    expect((await post({ scene: "s0", frame: 3 })).status).toBe(400);
+    expect((await t.post({ composition: "Story", props, scene: "s0" })).status).toBe(400);
+    expect((await post({ scene: "not a scene id" })).status).toBe(400);
+    // The frame is the scene's middle on the voiced timeline: here the second scene, with no voice, is 3s at 30fps after a 12-frame overlap.
+    expect(storySceneFrame(prepareStoryProps(props), "cta")).toBe(90 - 12 + 45);
+    expect(storySceneFrame(prepareStoryProps(props), "nope")).toBeUndefined();
   });
 
   it("doesn't hold a still to the video length limit", async () => {
