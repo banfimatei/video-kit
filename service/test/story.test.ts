@@ -17,7 +17,22 @@ describe("Story props", () => {
     const merged = { ...STORY_SAMPLE_PROPS, ...sent };
     expect(merged.brand).toEqual({});
     expect(merged.footer).toBe("");
+    expect(merged.musicTrack).toBeNull();
     expect(storySchema.parse(sent).scenes).toHaveLength(1);
+  });
+
+  it("accepts the interface cues", () => {
+    const p = prepareStoryProps({
+      scenes: [{ title: "a" }],
+      sfx: [
+        { sound: "click", at: 0 },
+        { sound: "key", at: 0.2 },
+        { sound: "soft", at: 0.4 },
+        { sound: "bell", at: 1 },
+      ],
+    });
+    expect(p.sfx?.map((s) => s.sound)).toEqual(["click", "key", "soft", "bell"]);
+    expect(p.musicTrack).toBeNull();
   });
 
   it("rejects duplicate scene ids, including a default id taken explicitly", () => {

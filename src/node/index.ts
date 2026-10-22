@@ -42,4 +42,5 @@ export {
   type MusicRequest,
   type MusicTrack,
 } from "./music.js";
+export { bakePosterFrame } from "./poster.js";
 export { bundleSite, packSite } from "./site.js";

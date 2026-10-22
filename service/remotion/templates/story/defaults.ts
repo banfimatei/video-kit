@@ -28,4 +28,5 @@ export const STORY_SAMPLE_PROPS: StoryProps = {
       body: "Or any sound effect you name.",
     },
   ],
+  musicTrack: null,
 };

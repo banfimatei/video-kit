@@ -5,6 +5,20 @@ import { afterEach, describe, expect, it } from "vitest";
 import { composeMusic, DEFAULT_MUSIC_PROMPT } from "../src/node/music.js";
 import { pcmToWav, pickTtsProvider } from "../src/node/tts.js";
 
+/** 16-bit PCM of clicks at `bpm`, so a composed bed can be checked for a grid. */
+function clickPcm(bpm: number, seconds: number, rate = 24_000): Buffer {
+  const n = Math.round(seconds * rate);
+  const pcm = Buffer.alloc(n * 2);
+  const step = Math.round((60 / bpm) * rate);
+  for (let at = 0; at < n; at += step) {
+    for (let i = 0; i < 120 && at + i < n; i++) {
+      const v = Math.sin((2 * Math.PI * 800 * i) / rate) * Math.exp(-i / 24);
+      pcm.writeInt16LE(Math.round(Math.max(-1, Math.min(1, v)) * 32767), (at + i) * 2);
+    }
+  }
+  return pcm;
+}
+
 const dirs: string[] = [];
 const tmp = () => {
   const d = mkdtempSync(path.join(os.tmpdir(), "vk-music-"));
@@ -35,6 +49,9 @@ describe("composeMusic", () => {
     expect(track.provider).toBe("elevenlabs");
     expect(track.src).toMatch(/^http:\/\/x\/[0-9a-f]{24}\.mp3$/);
     expect(track.durationInSeconds).toBeCloseTo(2, 1);
+    expect(track.tempo).toBeNull();
+    expect(track.beats).toEqual([]);
+    expect(track.strongCues).toEqual([]);
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe("https://api.elevenlabs.io/v1/music?output_format=mp3_44100_128");
     expect((calls[0].init.headers as Record<string, string>)["xi-api-key"]).toBe("e-key");
@@ -66,6 +83,21 @@ describe("composeMusic", () => {
     });
     expect(body.music_length_ms).toBe(10_000);
     expect(body.prompt).toBe("solo piano");
+  });
+
+  it("reads a beat grid off the bed it just wrote", async () => {
+    const fetchImpl = (async () => new Response(new Uint8Array(pcmToWav(clickPcm(120, 4), 24_000)))) as unknown as typeof fetch;
+    const track = await composeMusic({
+      request: { provider: "elevenlabs" },
+      seconds: 12,
+      dir: tmp(),
+      toSrc: (f) => f,
+      env: { ELEVENLABS_API_KEY: "k" },
+      fetchImpl,
+    });
+    expect(track.tempo).toBeCloseTo(120, 0);
+    expect(track.beats.length).toBeGreaterThan(6);
+    expect(track.strongCues.length).toBeGreaterThan(0);
   });
 
   it("says what failed", async () => {

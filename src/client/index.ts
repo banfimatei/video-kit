@@ -25,9 +25,10 @@ export interface RenderRequest {
   ttsOptions?: { model?: string; voice?: string };
   /**
    * A music bed composed to the video's length and passed to the composition
-   * as `props.musicTrack` ({ src, durationInSeconds, provider }); the
-   * composition decides how to play it. `"elevenlabs"` uses the service's
-   * default prompt; `{ provider, prompt }` brings its own. Videos only.
+   * as `props.musicTrack` ({ src, durationInSeconds, provider, tempo, beats,
+   * strongCues }); the composition decides how to play it. `"elevenlabs"`
+   * uses the service's default prompt; `{ provider, prompt }` brings its own.
+   * Videos only.
    */
   music?: "elevenlabs" | { provider: "elevenlabs"; prompt?: string };
   /** "video" (default, mp4) or "still" (png of `frame`). */

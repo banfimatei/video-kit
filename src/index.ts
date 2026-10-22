@@ -4,6 +4,7 @@
  * the render service client is in "@banfimatei/video-kit/client".
  */
 export { HOUSE_SFX, HOUSE_SFX_NAMES, REMOTION_SFX, resolveSound, type HouseSfx } from "./audio/library.js";
+export { MusicBed } from "./audio/MusicBed.js";
 export { Sfx } from "./audio/Sfx.js";
 export { SfxCues } from "./audio/SfxCues.js";
 export { VoiceTrack } from "./audio/VoiceTrack.js";

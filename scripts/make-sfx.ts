@@ -3,8 +3,11 @@
  *
  *   npm run sfx:make
  *
- * Quiet, printed-page cues for a broadsheet brand: a type tick, a paper
- * whoosh, a low landing thud, a two-note chime, a riser and a page flick.
+ * Quiet cues: a type tick, a paper whoosh, a low landing thud, a two-note
+ * chime, a riser, a page flick, and four interface sounds (a dull click, a
+ * key, a soft impact, a single bell). The interface ones stay dark in the
+ * high end so a launch edit can repeat a click without fatiguing, and save
+ * the bell for one payoff.
  * Generated from code, so they are ours (no licence to track), identical on
  * every run (seeded noise), and need no network at render time. The WAVs are
  * committed; rerun this only after changing a recipe here.
@@ -143,6 +146,35 @@ const recipes: Record<string, () => Float32Array> = {
     const x = render(0.28, (t) => n() * (Math.exp(-t * 28) * 0.9 + Math.exp(-((t - 0.07) ** 2) / 0.0006) * 0.6));
     return normalize(highpass(x, 1200), 0.6);
   },
+  // A button, dull on purpose: safe to repeat under a row of cards.
+  click: () => {
+    const n = noise(7);
+    const x = render(0.03, (t) => n() * Math.exp(-t * 160));
+    return normalize(lowpass(x, () => 1200), 0.45);
+  },
+  // One key of a keyboard, a little longer than a click, still low-passed.
+  key: () => {
+    const n = noise(8);
+    const x = render(0.05, (t) => (Math.sin(TAU * 620 * t) * 0.55 + n() * 0.45) * Math.exp(-t * 55));
+    return normalize(lowpass(x, () => 1800), 0.4);
+  },
+  // A soft body landing, for a card or a line that arrives. No click on top.
+  soft: () => {
+    let phase = 0;
+    return normalize(
+      render(0.2, (t) => {
+        phase += (TAU * (78 + 36 * Math.exp(-t * 16))) / RATE;
+        return Math.sin(phase) * Math.exp(-t * 12) * Math.min(1, t * 400);
+      }),
+      0.7,
+    );
+  },
+  // One partial, no shimmer: the payoff, used once.
+  bell: () =>
+    normalize(
+      render(0.7, (t) => Math.sin(TAU * 523 * t) * Math.exp(-t * 5.2) * Math.min(1, t * 500)),
+      0.5,
+    ),
 };
 
 mkdirSync(OUT, { recursive: true });

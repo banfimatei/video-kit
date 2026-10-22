@@ -148,6 +148,9 @@ export function prepareStoryProps(input: unknown): ParsedStoryProps {
     voiceover: null,
     soundDesign: props.soundDesign ?? "house",
     sfx: props.sfx ?? [],
+    // The renderer fills this after it knows the length. Absent, Remotion
+    // would keep whatever the sample props carried.
+    musicTrack: null,
   };
 }
 
