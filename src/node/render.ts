@@ -57,8 +57,8 @@ export interface RenderCompositionOptions {
    */
   music?: MusicRequest | null;
   /**
-   * Word timings on each clip: aligned by Deepgram speech-to-text (default
-   * when DEEPGRAM_API_KEY is set), else estimated. false always estimates.
+   * Word timings on each clip: aligned by Groq speech-to-text (default
+   * when GROQ_API_KEY is set), else estimated. false always estimates.
    */
   alignWords?: boolean;
   browserExecutable?: string | null;

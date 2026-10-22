@@ -17,8 +17,9 @@ export {
 export {
   alignToTranscript,
   alignWords,
-  DEEPGRAM_LISTEN_URL,
   estimateWords,
+  GROQ_TRANSCRIPTIONS_URL,
+  WORDS_SIDECAR_VERSION,
   scriptTokens,
   wordKey,
   type AlignWordsOptions,

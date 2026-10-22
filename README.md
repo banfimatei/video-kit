@@ -198,8 +198,8 @@ await renderComposition({
   compositionId: "MyVideo",
   inputProps: { narration: { intro: "Hello.", main: "Here's the thing." } },
   output: "out/my-video.mp4",
-  tts: "elevenlabs", // or openai | gemini | deepgram | openrouter | espeak | none; default: whichever key is set
-  ttsOptions: { voice: "flux-hannah-en" }, // optional: model and/or voice for this render, over the env defaults
+  tts: "elevenlabs", // or openai | gemini | openrouter | espeak | none; default: whichever key is set
+  ttsOptions: { voice: "onyx" }, // optional: model and/or voice for this render, over the env defaults
 });
 ```
 
@@ -214,8 +214,7 @@ assets, for validating props in Node. Scene ids must be unique
 | `elevenlabs` | `ELEVENLABS_API_KEY` (or `ELEVENLABS_KEY`) | `ELEVENLABS_VOICE_ID`, `ELEVENLABS_MODEL` |
 | `openai` | `OPENAI_API_KEY` | `OPENAI_TTS_MODEL`, `OPENAI_TTS_VOICE`, `OPENAI_TTS_INSTRUCTIONS` |
 | `gemini` | `GEMINI_API_KEY` | `GEMINI_TTS_MODEL`, `GEMINI_TTS_VOICE` |
-| `deepgram` | `DEEPGRAM_API_KEY` | `DEEPGRAM_TTS_MODEL`: an Aura-2 voice, which names model and voice together (default `aura-2-thalia-en`; e.g. `aura-2-apollo-en`, `aura-2-draco-en`, `aura-2-agustina-es`), or a Flux TTS voice `flux-<voice>-<lang>` (e.g. `flux-hannah-en`, `flux-miles-en`), sent to `/v2/speak`. Lines over 2000 characters are split at sentences. |
-| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `google/gemini-3.8-flash-tts`; also Voxtral, Kokoro, MiniMax, Deepgram… — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `Charon`; voices are per model, listed as `supported_voices` in `GET /api/v1/models?output_modalities=speech`), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only), `OPENROUTER_TTS_FORMAT` (`pcm`, wrapped as WAV, or `mp3`; default pcm, mp3 for Mistral) |
+| `openrouter` | `OPENROUTER_API_KEY` | `OPENROUTER_TTS_MODEL` (default `google/gemini-3.8-flash-tts`; also Voxtral, Kokoro, MiniMax — any model on [openrouter.ai/models?output_modalities=speech](https://openrouter.ai/models?output_modalities=speech)), `OPENROUTER_TTS_VOICE` (default `Charon`; voices are per model, listed as `supported_voices` in `GET /api/v1/models?output_modalities=speech`), `OPENROUTER_TTS_INSTRUCTIONS` (OpenAI models only), `OPENROUTER_TTS_FORMAT` (`pcm`, wrapped as WAV, or `mp3`; default pcm, mp3 for Mistral) |
 | `espeak` | `espeak-ng` installed | Robotic: offline tests and CI |
 
 Clips are cached by a hash of provider, voice and text, so re-rendering the
@@ -248,14 +247,15 @@ find the word where a name is said, caption word by word or cue on a word.
 Times are seconds from the start of that clip (add the scene's voice start
 for video time); they never go backwards and stay within the clip.
 
-- `aligned`: when `DEEPGRAM_API_KEY` is set (whichever voice made the clip),
-  the clip goes once to Deepgram speech-to-text (nova-3, `smart_format`) and
-  what it heard is matched back to the script. Dropped or extra words,
-  "2,110" against "2110", "&" against "and", "zortix.com" against "zortix dot
-  com" and small mishearings only cost the word concerned. The result is
-  cached next to the clip as `<clip>.words.json`, so re-renders don't pay
-  again. Cost: Deepgram's nova-3 pre-recorded rate per audio minute (around
-  half a cent a minute at pay-as-you-go list price; check deepgram.com/pricing),
+- `aligned`: when `GROQ_API_KEY` is set (whichever voice made the clip),
+  the clip goes once to Groq speech-to-text (`whisper-large-v3-turbo`,
+  `verbose_json` word timestamps) and what it heard is matched back to the
+  script. Dropped or extra words, "2,110" against "2110", "&" against "and",
+  "zortix.com" against "zortix dot com" and small mishearings only cost the
+  word concerned. The result is cached next to the clip as `<clip>.words.json`,
+  so re-renders don't pay again. Cost: Groq's whisper-large-v3-turbo rate,
+  $0.04 per hour of audio (about $0.0007 a minute, with a 10-second minimum
+  per request; check [Groq's speech-to-text pricing](https://console.groq.com/docs/speech-to-text)),
   so well under a cent for a 60-second short, once per line.
 - `estimated`: no key, `alignWords: false`, or the alignment failed (HTTP
   error, bad response, timeout, a transcript matching fewer than half the
@@ -267,7 +267,7 @@ for video time); they never go backwards and stay within the clip.
   tries again.
 
 `alignWords: false` on `renderComposition` or `voiceNarration` always
-estimates. The render service aligns whenever it has `DEEPGRAM_API_KEY`.
+estimates. The render service aligns whenever it has `GROQ_API_KEY`.
 `estimateWords`, `alignWords` and `alignToTranscript` are exported from
 `@banfimatei/video-kit/node`.
 
@@ -285,7 +285,7 @@ new services, so these are service settings:
 | Draining | the **variable** `RAILWAY_DEPLOYMENT_DRAINING_SECONDS=300` (not the Settings field: the service reads the variable to know its window, and logs it at boot) |
 | Start Command | leave empty. A start command replaces the image's entrypoint (`dumb-init`), and then renders can't drain on redeploy |
 | Watch paths | `/src/**`, `/assets/**`, `/service/src/**`, `/service/remotion/**`, `/service/scripts/**`, `/package.json`, `/package-lock.json`, `/service/package.json`, `/tsconfig*.json`, `/service/tsconfig*.json`, `/Dockerfile`, `/.dockerignore` (docs-only commits don't restart it) |
-| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, which music also uses, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`); `DEEPGRAM_API_KEY` for aligned word timings (without it the service estimates them, whatever key the caller has) |
+| Variables | `RENDER_API_KEY` (32+ random characters); a TTS key for voices (`ELEVENLABS_API_KEY`, which music also uses, `OPENAI_API_KEY`, `GEMINI_API_KEY` or `OPENROUTER_API_KEY`); `GROQ_API_KEY` for aligned word timings (without it the service estimates them, whatever key the caller has) |
 | Networking | a public domain; `RAILWAY_PUBLIC_DOMAIN` is used for links automatically |
 
 Everything else has defaults: see [`service/.env.example`](service/.env.example).

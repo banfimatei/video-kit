@@ -7,10 +7,11 @@ import { pcmToWav, voiceNarration } from "../src/node/tts.js";
 import {
   alignToTranscript,
   alignWords,
-  DEEPGRAM_LISTEN_URL,
   estimateWords,
+  GROQ_TRANSCRIPTIONS_URL,
   scriptTokens,
   wordKey,
+  WORDS_SIDECAR_VERSION,
   wordsForClip,
   type SttWord,
 } from "../src/node/words.js";
@@ -22,7 +23,7 @@ const tmp = () => {
   return d;
 };
 // Keep a developer's real key out of these tests: every alignment here goes to a fake fetch.
-beforeEach(() => vi.stubEnv("DEEPGRAM_API_KEY", undefined));
+beforeEach(() => vi.stubEnv("GROQ_API_KEY", undefined));
 afterEach(() => {
   vi.unstubAllEnvs();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
@@ -42,28 +43,19 @@ function expectWellFormed(words: VoiceWord[], text: string, duration: number) {
   }
 }
 
-/** A Deepgram /v1/listen response shaped like the real one (nova-3, smart_format). */
-function deepgramResponse(heard: Array<[punctuated: string, start: number, end: number]>, duration: number) {
-  const words = heard.map(([punctuated_word, start, end]) => ({
-    // Deepgram's `word` is lower case without punctuation; smart_format numbers lose their separators.
-    word: punctuated_word.toLowerCase().replace(/[.,!?]+$/, "").replace(/(\d),(\d)/g, "$1$2"),
-    start,
-    end,
-    confidence: 0.98,
-    punctuated_word,
-  }));
+/** A Groq verbose_json transcription: `{ word, start, end }` plus the clip duration. */
+function groqResponse(heard: Array<[word: string, start: number, end: number]>, duration: number) {
   return {
-    metadata: { request_id: "3f0e…", created: "2026-09-28T09:00:00.000Z", duration, channels: 1, models: ["nova-3"] },
-    results: {
-      channels: [
-        { alternatives: [{ transcript: heard.map((h) => h[0]).join(" "), confidence: 0.97, words }] },
-      ],
-    },
+    task: "transcribe",
+    language: "english",
+    duration,
+    text: heard.map((h) => h[0]).join(" "),
+    words: heard.map(([word, start, end]) => ({ word, start, end })),
   };
 }
 
 const SCRIPT = "This week, Alphabet led 2,110 safe ideas on zortix. The S&P 500 was quiet.";
-/** What STT heard: "led" dropped, "zortix" misheard, an extra "uh", "2,110" formatted by smart_format. */
+/** What STT heard: "led" dropped, "zortix" misheard, an extra "uh", "2,110" heard as digits. */
 const HEARD: Array<[string, number, number]> = [
   ["This", 0.12, 0.3],
   ["week,", 0.3, 0.58],
@@ -80,7 +72,7 @@ const HEARD: Array<[string, number, number]> = [
   ["was", 5.1, 5.3],
   ["quiet.", 5.3, 5.8],
 ];
-const stt = (heard: Array<[string, number, number]>): SttWord[] => deepgramResponse(heard, 6).results.channels[0].alternatives[0].words;
+const stt = (heard: Array<[string, number, number]>): SttWord[] => heard.map(([word, start, end]) => ({ word, start, end }));
 const at = (words: VoiceWord[], text: string) => words.find((w) => w.text === text)!;
 
 describe("estimateWords", () => {
@@ -238,27 +230,43 @@ describe("alignToTranscript", () => {
 });
 
 describe("alignWords", () => {
-  it("posts the clip to Deepgram nova-3 with a Token header and aligns the response", async () => {
+  it("posts the clip to Groq whisper-large-v3-turbo and aligns the response", async () => {
     const seen: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = (async (url: string, init: RequestInit) => {
       seen.push({ url, init });
-      return Response.json(deepgramResponse(HEARD, 6.02));
+      return Response.json(groqResponse(HEARD, 6.02));
     }) as unknown as typeof fetch;
     const audio = Buffer.from([0xff, 0xf3, 1, 2, 3]);
-    const words = await alignWords(SCRIPT, audio, "audio/mpeg", { durationInSeconds: 6, env: { DEEPGRAM_API_KEY: "dg" }, fetchImpl });
-    expect(seen[0].url).toBe("https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en");
-    expect(seen[0].url).toBe(DEEPGRAM_LISTEN_URL);
+    const words = await alignWords(SCRIPT, audio, "audio/mpeg", { durationInSeconds: 6, env: { GROQ_API_KEY: "gsk" }, fetchImpl });
+    expect(seen[0].url).toBe("https://api.groq.com/openai/v1/audio/transcriptions");
+    expect(seen[0].url).toBe(GROQ_TRANSCRIPTIONS_URL);
     expect(seen[0].init.method).toBe("POST");
-    expect(seen[0].init.headers).toEqual({ Authorization: "Token dg", "Content-Type": "audio/mpeg" });
-    expect(seen[0].init.body).toBe(audio);
+    expect(seen[0].init.headers).toEqual({ Authorization: "Bearer gsk" });
+    const form = seen[0].init.body as FormData;
+    expect(form).toBeInstanceOf(FormData);
+    expect(form.get("model")).toBe("whisper-large-v3-turbo");
+    expect(form.get("response_format")).toBe("verbose_json");
+    expect(form.get("timestamp_granularities[]")).toBe("word");
+    const file = form.get("file") as File;
+    expect(file).toBeInstanceOf(File);
+    expect(file.name).toBe("clip.mp3");
+    expect(file.type).toBe("audio/mpeg");
+    expect(Buffer.from(await file.arrayBuffer())).toEqual(audio);
     expect(seen[0].init.signal).toBeInstanceOf(AbortSignal);
     expectWellFormed(words, SCRIPT, 6);
     expect(at(words, "2,110").start).toBe(1.4);
   });
 
-  it("uses Deepgram's duration when not given one", async () => {
-    const fetchImpl = (async () => Response.json(deepgramResponse([["Hello", 0.1, 0.5], ["there.", 0.5, 0.9]], 1.1))) as unknown as typeof fetch;
-    const words = await alignWords("Hello there.", Buffer.alloc(4), "audio/wav", { env: { DEEPGRAM_API_KEY: "k" }, fetchImpl });
+  it("uses the transcript duration when not given one, and ignores a leading space on a word", async () => {
+    const fetchImpl = (async () =>
+      Response.json({
+        duration: "1.1",
+        words: [
+          { word: " Hello", start: 0.1, end: 0.5 },
+          { word: " there.", start: 0.5, end: 0.9 },
+        ],
+      })) as unknown as typeof fetch;
+    const words = await alignWords("Hello there.", Buffer.alloc(4), "audio/wav", { env: { GROQ_API_KEY: "k" }, fetchImpl });
     expect(words).toEqual([
       { text: "Hello", start: 0.1, end: 0.5 },
       { text: "there.", start: 0.5, end: 0.9 },
@@ -266,24 +274,24 @@ describe("alignWords", () => {
   });
 
   it("throws on HTTP errors, bad JSON, no words, a transcript of something else, or no key", async () => {
-    const env = { DEEPGRAM_API_KEY: "k" };
+    const env = { GROQ_API_KEY: "k" };
     const answer = (res: () => Response) => (async () => res()) as unknown as typeof fetch;
-    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json({ err_msg: "Invalid credentials." }, { status: 401 })) })).rejects.toThrow(/Deepgram STT 401: .*Invalid credentials/);
+    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json({ error: { message: "Invalid API Key" } }, { status: 401 })) })).rejects.toThrow(/Groq STT 401: .*Invalid API Key/);
     await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => new Response("<html>bad gateway</html>")) })).rejects.toThrow();
-    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json({ results: {} })) })).rejects.toThrow(/no words/);
-    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json(deepgramResponse([], 1))) })).rejects.toThrow(/heard no words/);
+    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json({ text: "Hi." })) })).rejects.toThrow(/no words/);
+    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env, fetchImpl: answer(() => Response.json(groqResponse([], 1))) })).rejects.toThrow(/heard no words/);
     await expect(
       alignWords("Alphabet led the week on zortix.", Buffer.alloc(4), "audio/wav", {
         env,
-        fetchImpl: answer(() => Response.json(deepgramResponse([["Completely", 0, 0.5], ["different", 0.5, 1], ["audio.", 1, 1.4]], 1.5))),
+        fetchImpl: answer(() => Response.json(groqResponse([["Completely", 0, 0.5], ["different", 0.5, 1], ["audio.", 1, 1.4]], 1.5))),
       }),
     ).rejects.toThrow(/matched only 0 of 6/);
-    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env: {}, fetchImpl: answer(() => Response.json({})) })).rejects.toThrow(/DEEPGRAM_API_KEY/);
+    await expect(alignWords("Hi.", Buffer.alloc(4), "audio/wav", { env: {}, fetchImpl: answer(() => Response.json({})) })).rejects.toThrow(/GROQ_API_KEY/);
   });
 });
 
 describe("voiceNarration word timings", () => {
-  /** A fake voice making `seconds` of silence per line, and a fake Deepgram that hears HEARD. */
+  /** A fake voice making `seconds` of silence per line, and a fake transcription that hears HEARD. */
   function rig(opts: { seconds?: number; listen?: () => Response | Promise<Response> } = {}) {
     const calls = { synth: 0, listen: [] as Array<{ url: string; init: RequestInit }> };
     const synthesizer = {
@@ -293,11 +301,11 @@ describe("voiceNarration word timings", () => {
     };
     const fetchImpl = (async (url: string, init: RequestInit) => {
       calls.listen.push({ url, init });
-      return opts.listen ? opts.listen() : Response.json(deepgramResponse(HEARD, 6));
+      return opts.listen ? opts.listen() : Response.json(groqResponse(HEARD, 6));
     }) as unknown as typeof fetch;
     return { calls, synthesizer, fetchImpl };
   }
-  const env = { DEEPGRAM_API_KEY: "dg" };
+  const env = { GROQ_API_KEY: "gsk" };
 
   it("aligns each clip once and reuses the cached alignment on the next render", async () => {
     const d = tmp();
@@ -308,11 +316,14 @@ describe("voiceNarration word timings", () => {
     expectWellFormed(first.s0!.words!, SCRIPT, first.s0!.durationInSeconds);
     expect(at(first.s0!.words!, "2,110")).toEqual({ text: "2,110", start: 1.4, end: 2.3 });
     expect(calls.listen).toHaveLength(1);
-    expect((calls.listen[0].init.headers as Record<string, string>)["Content-Type"]).toBe("audio/wav");
+    expect((calls.listen[0].init.headers as Record<string, string>).Authorization).toBe("Bearer gsk");
+    expect(((calls.listen[0].init.body as FormData).get("file") as File).type).toBe("audio/wav");
     const clip = first.s0!.src.replace("voiceover/", "");
     const sidecar = clip.replace(/\.wav$/, ".words.json");
     expect(readdirSync(d).sort()).toEqual([clip, sidecar].sort());
-    expect(JSON.parse(readFileSync(path.join(d, sidecar), "utf8")).words).toEqual(first.s0!.words);
+    const cached = JSON.parse(readFileSync(path.join(d, sidecar), "utf8"));
+    expect(cached.version).toBe(WORDS_SIDECAR_VERSION);
+    expect(cached.words).toEqual(first.s0!.words);
 
     const again = await voiceNarration({ s0: SCRIPT }, { provider: "espeak", dir: d, synthesizer, env, fetchImpl });
     expect(calls.listen).toHaveLength(1);
@@ -334,11 +345,15 @@ describe("voiceNarration word timings", () => {
     const sidecar = path.join(d, v.s0!.src.replace("voiceover/", "").replace(/\.wav$/, ".words.json"));
     const good = JSON.parse(readFileSync(sidecar, "utf8"));
 
+    const unversioned = { ...good };
+    delete unversioned.version;
     for (const bad of [
       "{ truncated",
       JSON.stringify({ ...good, words: good.words.slice(1) }), // wrong token count
       JSON.stringify({ ...good, words: good.words.map((w: VoiceWord, i: number) => (i === 3 ? { ...w, start: 99, end: 99 } : w)) }),
       JSON.stringify({ ...good, bytes: good.bytes + 1 }), // made for an earlier clip of this line
+      JSON.stringify({ ...good, version: 1 }), // previous aligner
+      JSON.stringify(unversioned), // sidecar from before `version` was written
     ]) {
       writeFileSync(sidecar, bad);
       const before = calls.listen.length;
@@ -390,7 +405,7 @@ describe("voiceNarration word timings", () => {
 
     const warnings: string[] = [];
     await voiceNarration({ a: "Hi." }, { provider: "espeak", dir: d, synthesizer, env: {}, fetchImpl, alignWords: true, onWarning: (m) => warnings.push(m) });
-    expect(warnings).toEqual(["alignWords needs DEEPGRAM_API_KEY; word timings will be estimated."]);
+    expect(warnings).toEqual(["alignWords needs GROQ_API_KEY; word timings will be estimated."]);
   });
 
   it("stops on abort during alignment instead of estimating", async () => {
@@ -414,7 +429,7 @@ describe("voiceNarration word timings", () => {
     const { calls, synthesizer, fetchImpl } = rig({
       listen: async () => {
         await new Promise((r) => setTimeout(r, 30));
-        return Response.json(deepgramResponse(HEARD, 6));
+        return Response.json(groqResponse(HEARD, 6));
       },
     });
     const [a, b] = await Promise.all([
@@ -428,7 +443,7 @@ describe("voiceNarration word timings", () => {
 });
 
 describe("sharing an alignment in flight", () => {
-  /** A clip on disk, and a fake Deepgram that answers after `ms` unless its request is aborted first. */
+  /** A clip on disk, and a fake transcription that answers after `ms` unless its request is aborted first. */
   function slowRig(ms: number) {
     const file = path.join(tmp(), "clip.wav");
     writeFileSync(file, silence(6));
@@ -439,14 +454,14 @@ describe("sharing an alignment in flight", () => {
         const timer = setTimeout(resolve, ms);
         init.signal?.addEventListener("abort", () => (clearTimeout(timer), reject(init.signal!.reason)));
       });
-      return Response.json(deepgramResponse(HEARD, 6));
+      return Response.json(groqResponse(HEARD, 6));
     }) as unknown as typeof fetch;
     const opts = (signal?: AbortSignal) => ({
       file,
       seconds: 6,
       cached: false,
       align: true,
-      env: { DEEPGRAM_API_KEY: "dg" },
+      env: { GROQ_API_KEY: "gsk" },
       fetchImpl,
       signal,
       warn: () => undefined,

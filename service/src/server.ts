@@ -20,7 +20,7 @@ const renderRequestSchema = z.object({
   site: z.string().min(1).max(63).default(BUILTIN),
   composition: z.string().min(1).max(100),
   props: z.record(z.string(), z.unknown()).default({}),
-  tts: z.enum(["elevenlabs", "openai", "gemini", "deepgram", "openrouter", "espeak", "none"]).optional(),
+  tts: z.enum(["elevenlabs", "openai", "gemini", "openrouter", "espeak", "none"]).optional(),
   ttsOptions: z
     .object({
       model: z.string().regex(TTS_OPTION_PATTERN, "not a model name").optional(),
