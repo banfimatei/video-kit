@@ -7,7 +7,6 @@
  *   elevenlabs  ELEVENLABS_API_KEY (or ELEVENLABS_KEY)  [ELEVENLABS_VOICE_ID, ELEVENLABS_MODEL]
  *   openai      OPENAI_API_KEY      [OPENAI_TTS_MODEL, OPENAI_TTS_VOICE, OPENAI_TTS_INSTRUCTIONS]
  *   gemini      GEMINI_API_KEY      [GEMINI_TTS_MODEL, GEMINI_TTS_VOICE]
- *   deepgram    DEEPGRAM_API_KEY    [DEEPGRAM_TTS_MODEL: aura-2-* voices, or flux-* for Flux TTS]
  *   openrouter  OPENROUTER_API_KEY  [OPENROUTER_TTS_MODEL, OPENROUTER_TTS_VOICE, OPENROUTER_TTS_INSTRUCTIONS]
  *   espeak      espeak-ng on PATH, no key: robotic, for offline tests and CI only
  *   none        no voice
@@ -16,8 +15,8 @@
  * line again is free. `withTtsOptions` swaps the model or voice for one call
  * (a render request's `ttsOptions`) without touching the environment.
  *
- * Each clip also gets word timings (words.ts): aligned by Deepgram
- * speech-to-text when DEEPGRAM_API_KEY is set (whatever voiced it), else estimated.
+ * Each clip also gets word timings (words.ts): aligned by Groq
+ * speech-to-text when GROQ_API_KEY is set (whatever voiced it), else estimated.
  */
 import { createHash, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
@@ -31,7 +30,7 @@ import { wordsForClip } from "./words.js";
 
 const execFileAsync = promisify(execFile);
 
-export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "deepgram", "openrouter", "espeak"] as const;
+export const TTS_PROVIDERS = ["elevenlabs", "openai", "gemini", "openrouter", "espeak"] as const;
 export type TtsProvider = (typeof TTS_PROVIDERS)[number];
 type Env = Record<string, string | undefined>;
 
@@ -48,7 +47,6 @@ export function pickTtsProvider(requested?: string | null, env: Env = process.en
   if (elevenLabsKey(env)) return "elevenlabs";
   if (env.OPENAI_API_KEY) return "openai";
   if (env.GEMINI_API_KEY) return "gemini";
-  if (env.DEEPGRAM_API_KEY) return "deepgram";
   if (env.OPENROUTER_API_KEY) return "openrouter";
   return null;
 }
@@ -59,20 +57,19 @@ export interface TtsOptions {
   voice?: string;
 }
 
-/** Which env var holds each provider's model and voice. Deepgram names both with one model string. */
+/** Which env var holds each provider's model and voice. */
 const OPTION_VARS: Record<TtsProvider, { model?: string; voice?: string }> = {
   elevenlabs: { model: "ELEVENLABS_MODEL", voice: "ELEVENLABS_VOICE_ID" },
   openai: { model: "OPENAI_TTS_MODEL", voice: "OPENAI_TTS_VOICE" },
   gemini: { model: "GEMINI_TTS_MODEL", voice: "GEMINI_TTS_VOICE" },
-  deepgram: { model: "DEEPGRAM_TTS_MODEL", voice: "DEEPGRAM_TTS_MODEL" },
   openrouter: { model: "OPENROUTER_TTS_MODEL", voice: "OPENROUTER_TTS_VOICE" },
   espeak: { voice: "ESPEAK_VOICE" },
 };
 
-/** Model and voice names: slugs like "aura-2-apollo-en", "google/gemini-3.8-flash-tts", "Charon". */
+/** Model and voice names: slugs like "gpt-4o-mini-tts", "google/gemini-3.8-flash-tts", "Charon". */
 export const TTS_OPTION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$/;
 
-/** `env` with `options` applied as the provider's model/voice vars. For Deepgram the voice wins (it is the model). */
+/** `env` with `options` applied as the provider's model/voice vars. */
 export function withTtsOptions(provider: TtsProvider, env: Env, options?: TtsOptions | null): Env {
   if (!options) return env;
   const vars = OPTION_VARS[provider];
@@ -138,22 +135,6 @@ export function pcmToWav(pcm: Buffer, rate: number, channels = 1): Buffer {
   head.write("data", 36);
   head.writeUInt32LE(pcm.length, 40);
   return Buffer.concat([head, pcm]);
-}
-
-/** Split text into parts of at most `max` characters, at sentence ends, then spaces, then anywhere. */
-export function splitForTts(text: string, max: number): string[] {
-  const parts: string[] = [];
-  let rest = text.trim();
-  while (rest.length > max) {
-    const window = rest.slice(0, max);
-    let cut = Math.max(window.lastIndexOf(". "), window.lastIndexOf("! "), window.lastIndexOf("? "));
-    cut = cut > max / 2 ? cut + 1 : window.lastIndexOf(" ");
-    if (cut <= 0) cut = max;
-    parts.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-  if (rest) parts.push(rest);
-  return parts;
 }
 
 export function createSynthesizer(
@@ -304,37 +285,6 @@ export function createSynthesizer(
         },
       };
     }
-    case "deepgram": {
-      // The model and the voice are one name: aura-2-<voice>-<lang> (thalia, apollo, draco…) on /v1/speak,
-      // or flux-<voice>-<lang> (Flux TTS: hannah, miles, alexis…) on /v2/speak. Same request shape.
-      const key = required(env, "DEEPGRAM_API_KEY");
-      const model = env.DEEPGRAM_TTS_MODEL || "aura-2-thalia-en";
-      const version = model.startsWith("flux-") ? "v2" : "v1";
-      return {
-        voice: model,
-        ext: "mp3",
-        synthesize: async (text, signal) => {
-          // Aura takes at most 2000 characters a request (Flux: assume the same); longer lines go in sentence-sized parts,
-          // and mp3 frames simply concatenate.
-          const parts: Buffer[] = [];
-          for (const chunk of splitForTts(text, 1900)) {
-            const res = await post(
-              fetchImpl,
-              `https://api.deepgram.com/${version}/speak?model=${encodeURIComponent(model)}&encoding=mp3`,
-              {
-                method: "POST",
-                headers: { Authorization: `Token ${key}`, "Content-Type": "application/json" },
-                body: JSON.stringify({ text: chunk }),
-              },
-              "Deepgram",
-              signal,
-            );
-            parts.push(Buffer.from(await res.arrayBuffer()));
-          }
-          return Buffer.concat(parts);
-        },
-      };
-    }
     case "espeak": {
       const voice = env.ESPEAK_VOICE || "en-us";
       const speed = env.ESPEAK_SPEED || "165";
@@ -386,8 +336,8 @@ export interface VoiceNarrationOptions {
   /** Stop between clips and cancel the one in flight. */
   signal?: AbortSignal;
   /**
-   * Time each clip's words with Deepgram speech-to-text (cached next to the
-   * clip). Default: on when DEEPGRAM_API_KEY is set; otherwise, and whenever
+   * Time each clip's words with Groq speech-to-text (cached next to the
+   * clip). Default: on when GROQ_API_KEY is set; otherwise, and whenever
    * alignment fails, words are estimated. false also ignores cached alignments.
    */
   alignWords?: boolean;
@@ -465,8 +415,8 @@ export async function voiceNarration(narration: Narration, opts: VoiceNarrationO
   const toSrc = opts.toSrc ?? ((file: string) => `voiceover/${file}`);
   const env = opts.env ?? process.env;
   const warn = opts.onWarning ?? ((message: string) => console.warn(`[video-kit] ${message}`));
-  const align = opts.alignWords !== false && Boolean(env.DEEPGRAM_API_KEY);
-  if (opts.alignWords && !env.DEEPGRAM_API_KEY) warn("alignWords needs DEEPGRAM_API_KEY; word timings will be estimated.");
+  const align = opts.alignWords !== false && Boolean(env.GROQ_API_KEY);
+  if (opts.alignWords && !env.GROQ_API_KEY) warn("alignWords needs GROQ_API_KEY; word timings will be estimated.");
   await mkdir(opts.dir, { recursive: true });
 
   const out: Voiceover = {};

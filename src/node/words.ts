@@ -4,10 +4,11 @@
  * word by word or put something on screen on the word that names it.
  *
  * Two sources, recorded as the clip's `wordTiming`:
- *   aligned    Deepgram speech-to-text (nova-3) on the clip, matched back to
- *              the script, so each entry keeps the script's own spelling
+ *   aligned    Groq speech-to-text (whisper-large-v3-turbo) on the clip,
+ *              matched back to the script, so each entry keeps the script's
+ *              own spelling
  *   estimated  the clip's length spread over the words by spoken length
- *              (a number counts as its words): no DEEPGRAM_API_KEY,
+ *              (a number counts as its words): no GROQ_API_KEY,
  *              alignment turned off, or it failed
  *
  * Either way `words` has exactly one entry per script token
@@ -21,7 +22,7 @@ import type { VoiceWord, WordTiming } from "../schema.js";
 type Env = Record<string, string | undefined>;
 type Span = [start: number, end: number];
 
-/** One recognised word as Deepgram's /v1/listen returns it. */
+/** One recognised word: Groq's verbose_json `words` entry, or the same shape from anywhere else. */
 export interface SttWord {
   word: string;
   start: number;
@@ -327,22 +328,41 @@ export function alignToTranscript(
   return { words: finish(tokens, spans as Span[], duration), matched };
 }
 
-/** Deepgram's pre-recorded speech-to-text, with numbers and punctuation formatted (smart_format). */
-export const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&language=en";
+/** Groq's OpenAI-compatible transcriptions endpoint (word timestamps via verbose_json). */
+export const GROQ_TRANSCRIPTIONS_URL = "https://api.groq.com/openai/v1/audio/transcriptions";
+
+const GROQ_TRANSCRIPTION_MODEL = "whisper-large-v3-turbo";
+
+/**
+ * Written on each `.words.json`. Bump when the aligner changes so a sidecar
+ * from an older one is done again. Files without this field are stale.
+ */
+export const WORDS_SIDECAR_VERSION = 2;
 
 export interface AlignWordsOptions {
-  /** The clip's measured length; timings are clamped to it. Default: Deepgram's reported duration. */
+  /** The clip's measured length; timings are clamped to it. Default: the transcript's reported duration. */
   durationInSeconds?: number;
-  /** Where DEEPGRAM_API_KEY is read. Default process.env. */
+  /** Where GROQ_API_KEY is read. Default process.env. */
   env?: Env;
   fetchImpl?: typeof fetch;
   signal?: AbortSignal;
-  /** Give up on Deepgram after this long. Default 60 s. */
+  /** Give up on the transcription after this long. Default 60 s. */
   timeoutMs?: number;
 }
 
+/** A name Groq can use to tell the audio format. Clips here are wav or mp3. */
+function audioFilename(contentType: string): string {
+  return contentType.toLowerCase().includes("wav") ? "clip.wav" : "clip.mp3";
+}
+
+/** A positive finite duration, including one Groq sent as a numeric string. */
+function reportedDuration(value: unknown): number | undefined {
+  const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return positive(n) ? n : undefined;
+}
+
 /**
- * Time a clip's script from the clip itself: send the audio to Deepgram
+ * Time a clip's script from the clip itself: send the audio to Groq
  * speech-to-text and align what it heard with `text` (alignToTranscript).
  * Throws on an HTTP error, a response without words, or one that matches
  * fewer than half the script's words (probably not this line's audio);
@@ -354,40 +374,45 @@ export async function alignWords(
   contentType: string,
   opts: AlignWordsOptions = {},
 ): Promise<VoiceWord[]> {
-  const key = (opts.env ?? process.env).DEEPGRAM_API_KEY;
-  if (!key) throw new Error("DEEPGRAM_API_KEY is not set.");
+  const key = (opts.env ?? process.env).GROQ_API_KEY;
+  if (!key) throw new Error("GROQ_API_KEY is not set.");
   const timeout = AbortSignal.timeout(opts.timeoutMs ?? 60_000);
-  const res = await (opts.fetchImpl ?? fetch)(DEEPGRAM_LISTEN_URL, {
+  const form = new FormData();
+  // A fresh view: File must not see a Buffer's shared pool past this clip's bytes.
+  const bytes = new Uint8Array(audio.byteLength);
+  bytes.set(audio);
+  form.append("file", new File([bytes], audioFilename(contentType), { type: contentType || "application/octet-stream" }));
+  form.append("model", GROQ_TRANSCRIPTION_MODEL);
+  form.append("response_format", "verbose_json");
+  form.append("timestamp_granularities[]", "word");
+  const res = await (opts.fetchImpl ?? fetch)(GROQ_TRANSCRIPTIONS_URL, {
     method: "POST",
-    headers: { Authorization: `Token ${key}`, "Content-Type": contentType },
-    // fetch's types want an ArrayBuffer-backed view, which a Buffer read from disk is; only its own bytes are sent.
-    body: audio as Uint8Array<ArrayBuffer>,
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
     signal: opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout,
   });
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`Deepgram STT ${res.status}: ${body.slice(0, 300)}`);
+    throw new Error(`Groq STT ${res.status}: ${body.slice(0, 300)}`);
   }
-  const json = (await res.json()) as {
-    metadata?: { duration?: number };
-    results?: { channels?: Array<{ alternatives?: Array<{ words?: unknown }> }> };
-  } | null;
-  const words = json?.results?.channels?.[0]?.alternatives?.[0]?.words;
-  if (!Array.isArray(words)) throw new Error("Deepgram STT returned no words.");
+  const json = (await res.json()) as { duration?: unknown; words?: unknown } | null;
+  const words = json?.words;
+  if (!Array.isArray(words)) throw new Error("Groq STT returned no words.");
   const heard = words.filter(
     (w): w is SttWord =>
       typeof w?.word === "string" && Number.isFinite(w.start) && Number.isFinite(w.end) && w.end >= w.start,
   );
-  if (!heard.length) throw new Error("Deepgram STT heard no words.");
-  const duration = positive(opts.durationInSeconds) ? opts.durationInSeconds : json?.metadata?.duration;
+  if (!heard.length) throw new Error("Groq STT heard no words.");
+  const duration = positive(opts.durationInSeconds) ? opts.durationInSeconds : reportedDuration(json?.duration);
   const { words: timed, matched } = alignToTranscript(text, heard, duration);
   const comparable = scriptTokens(text).filter((t) => wordKey(t)).length;
-  if (matched < comparable / 2) throw new Error(`Deepgram STT matched only ${matched} of ${comparable} words.`);
+  if (matched < comparable / 2) throw new Error(`Groq STT matched only ${matched} of ${comparable} words.`);
   return timed;
 }
 
 /** What a clip's `.words.json` holds: an alignment and what it was made from, to tell a stale one. */
 interface WordsSidecar {
+  version: number;
   text: string;
   bytes: number;
   durationInSeconds: number;
@@ -397,7 +422,7 @@ interface WordsSidecar {
 /** The sidecar's words if it belongs to exactly this text and clip, else null. */
 function validSidecar(json: unknown, tokens: readonly string[], text: string, bytes: number, seconds: number): VoiceWord[] | null {
   const s = json as Partial<WordsSidecar> | null;
-  if (!s || s.text !== text || s.bytes !== bytes || s.durationInSeconds !== seconds) return null;
+  if (!s || s.version !== WORDS_SIDECAR_VERSION || s.text !== text || s.bytes !== bytes || s.durationInSeconds !== seconds) return null;
   if (!Array.isArray(s.words) || s.words.length !== tokens.length) return null;
   let last = 0;
   for (let i = 0; i < tokens.length; i++) {
@@ -425,7 +450,7 @@ export interface ClipWordsOptions {
   seconds: number;
   /** Use a cached alignment (false: always estimate). */
   cached: boolean;
-  /** Ask Deepgram when there is no good cached alignment. */
+  /** Ask Groq when there is no good cached alignment. */
   align: boolean;
   env?: Env;
   fetchImpl?: typeof fetch;
@@ -479,7 +504,7 @@ export async function wordsForClip(
           fetchImpl: opts.fetchImpl,
           signal: opts.signal,
         });
-        const body: WordsSidecar = { text, bytes: audio.length, durationInSeconds: opts.seconds, words };
+        const body: WordsSidecar = { version: WORDS_SIDECAR_VERSION, text, bytes: audio.length, durationInSeconds: opts.seconds, words };
         // Write then rename, so a reader never sees half a file. Failing to cache only costs a re-alignment later.
         const tmp = `${sidecar}.${randomUUID()}.tmp`;
         try {
@@ -504,7 +529,7 @@ export async function wordsForClip(
  * Run `align` for `sidecar`, or share a run already in flight. If that one
  * fails (say its render was canceled), look again before starting our own:
  * another waiter may have started the retry already, and every waiter
- * retrying at once would pay Deepgram once each. Waiting on someone else's
+ * retrying at once would pay for a transcription once each. Waiting on someone else's
  * run still stops the moment our own `signal` aborts; the run goes on for the
  * others.
  */

@@ -8,7 +8,6 @@ import {
   createSynthesizer,
   pcmToWav,
   pickTtsProvider,
-  splitForTts,
   voiceNarration,
   withTtsOptions,
 } from "../src/node/tts.js";
@@ -20,9 +19,9 @@ const tmp = () => {
   dirs.push(d);
   return d;
 };
-// voiceNarration aligns words whenever DEEPGRAM_API_KEY is set; a developer's real key must not
-// send these clips to Deepgram (test/words.test.ts covers alignment with a fake).
-beforeEach(() => vi.stubEnv("DEEPGRAM_API_KEY", undefined));
+// voiceNarration aligns words whenever GROQ_API_KEY is set; a developer's real key must not
+// send these clips off for alignment (test/words.test.ts covers that with a fake).
+beforeEach(() => vi.stubEnv("GROQ_API_KEY", undefined));
 afterEach(() => {
   vi.unstubAllEnvs();
   dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force: true }));
@@ -46,11 +45,6 @@ describe("pickTtsProvider", () => {
     expect(pickTtsProvider(undefined, { OPENROUTER_API_KEY: "r" })).toBe("openrouter");
     expect(pickTtsProvider(undefined, { OPENROUTER_API_KEY: "r", GEMINI_API_KEY: "g" })).toBe("gemini");
     expect(pickTtsProvider("openrouter", {})).toBe("openrouter");
-  });
-  it("prefers a direct Deepgram key over OpenRouter", () => {
-    expect(pickTtsProvider(undefined, { OPENROUTER_API_KEY: "r", DEEPGRAM_API_KEY: "d" })).toBe("deepgram");
-    expect(pickTtsProvider(undefined, { DEEPGRAM_API_KEY: "d", GEMINI_API_KEY: "g" })).toBe("gemini");
-    expect(pickTtsProvider(undefined, { DEEPGRAM_API_KEY: "d", GEMINI_API_KEY: "g", TTS_PROVIDER: "deepgram" })).toBe("deepgram");
   });
   it("rejects an unknown provider", () => {
     expect(() => pickTtsProvider("polly", {})).toThrow(/Unknown TTS provider/);
@@ -269,64 +263,17 @@ describe("voiceNarration", () => {
     expect(voxtral.voice).not.toBe(gemini.voice);
   });
 
-  it("speaks through Deepgram Aura-2 with a Token header, splitting long lines", async () => {
-    const seen: Array<{ url: string; init: RequestInit }> = [];
-    const fetchImpl = (async (url: string, init: RequestInit) => {
-      seen.push({ url, init });
-      return new Response(Buffer.from([0xff, 0xf3, seen.length]), { headers: { "Content-Type": "audio/mpeg" } });
-    }) as unknown as typeof fetch;
-    const dg = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "dg-key" }, fetchImpl);
-    expect(dg.ext).toBe("mp3");
-    expect(dg.voice).toBe("aura-2-thalia-en");
-    await dg.synthesize("Hello.");
-    expect(seen[0].url).toBe("https://api.deepgram.com/v1/speak?model=aura-2-thalia-en&encoding=mp3");
-    expect((seen[0].init.headers as Record<string, string>).Authorization).toBe("Token dg-key");
-    expect(JSON.parse(String(seen[0].init.body))).toEqual({ text: "Hello." });
-
-    const apollo = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "aura-2-apollo-en" }, fetchImpl);
-    const long = "This sentence is exactly forty chars ok. ".repeat(60).trim(); // ~2400 chars
-    const audio = await apollo.synthesize(long);
-    const calls = seen.slice(1);
-    expect(calls).toHaveLength(2);
-    expect(calls.every((c) => c.url.includes("model=aura-2-apollo-en"))).toBe(true);
-    expect(calls.every((c) => JSON.parse(String(c.init.body)).text.length <= 2000)).toBe(true);
-    expect(audio.length).toBe(6);
-    const err = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k" }, (async () =>
-      Response.json({ err_msg: "Invalid credentials." }, { status: 401 })) as unknown as typeof fetch);
-    await expect(err.synthesize("x")).rejects.toThrow(/Deepgram TTS 401/);
-  });
-
-  it("sends flux-* Deepgram models to Flux TTS on /v2/speak", async () => {
-    const seen: string[] = [];
-    const fetchImpl = (async (url: string) => {
-      seen.push(url);
-      return new Response(Buffer.from([0xff, 0xf3, 1]), { headers: { "Content-Type": "audio/mpeg" } });
-    }) as unknown as typeof fetch;
-    const flux = createSynthesizer("deepgram", { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "flux-hannah-en" }, fetchImpl);
-    await flux.synthesize("Hello.");
-    expect(seen[0]).toBe("https://api.deepgram.com/v2/speak?model=flux-hannah-en&encoding=mp3");
-    expect(flux.voice).toBe("flux-hannah-en");
-  });
-
   it("overrides a provider's model and voice for one call, without touching the env", () => {
-    const env = { DEEPGRAM_API_KEY: "k", DEEPGRAM_TTS_MODEL: "aura-2-thalia-en" };
-    const dg = withTtsOptions("deepgram", env, { voice: "flux-miles-en" });
-    expect(dg.DEEPGRAM_TTS_MODEL).toBe("flux-miles-en");
-    expect(env.DEEPGRAM_TTS_MODEL).toBe("aura-2-thalia-en");
-    expect(createSynthesizer("deepgram", dg, fetch).voice).toBe("flux-miles-en");
+    const env = { OPENAI_API_KEY: "k", OPENAI_TTS_MODEL: "gpt-4o-mini-tts", OPENAI_TTS_VOICE: "onyx" };
+    const next = withTtsOptions("openai", env, { voice: "alloy" });
+    expect(next.OPENAI_TTS_VOICE).toBe("alloy");
+    expect(env.OPENAI_TTS_VOICE).toBe("onyx");
+    expect(createSynthesizer("openai", next, fetch).voice).toContain("alloy");
     const or = withTtsOptions("openrouter", { OPENROUTER_API_KEY: "k" }, { model: "google/gemini-3.8-flash-tts", voice: "Kore" });
     expect(or).toMatchObject({ OPENROUTER_TTS_MODEL: "google/gemini-3.8-flash-tts", OPENROUTER_TTS_VOICE: "Kore" });
     expect(withTtsOptions("openai", env, null)).toBe(env);
     expect(() => withTtsOptions("espeak", {}, { model: "x" })).toThrow(/no model option/);
-    expect(() => withTtsOptions("deepgram", env, { voice: "bad voice; rm" })).toThrow(/Invalid TTS voice/);
-  });
-
-  it("splits text at sentence ends, then spaces", () => {
-    expect(splitForTts("Short.", 100)).toEqual(["Short."]);
-    const parts = splitForTts("One two three. Four five six. Seven eight nine.", 30);
-    expect(parts.every((p) => p.length <= 30)).toBe(true);
-    expect(parts.join(" ")).toBe("One two three. Four five six. Seven eight nine.");
-    expect(splitForTts("x".repeat(25), 10)).toEqual(["xxxxxxxxxx", "xxxxxxxxxx", "xxxxx"]);
+    expect(() => withTtsOptions("openai", env, { voice: "bad voice; rm" })).toThrow(/Invalid TTS voice/);
   });
 
   it("fails loudly when OpenRouter answers with an error or with something that isn't audio", async () => {
